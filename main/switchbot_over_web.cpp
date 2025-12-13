@@ -15,15 +15,69 @@
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "os/os_mbuf.h"
 #include "services/gap/ble_svc_gap.h"
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <stdio.h>
+
+class DeviceService {
+public:
+  static const uint8_t MAX_CHARACTERISTICS = 16;
+  ble_gatt_svc service;
+  ble_gatt_chr characteristics[MAX_CHARACTERISTICS];
+
+  operator const ble_gatt_svc *() const { return &(this->service); }
+  operator ble_gatt_svc() const { return this->service; }
+  ble_gatt_chr *add_characteristic(const ble_gatt_chr *chr) {
+    if (!chr) {
+      return NULL;
+    }
+    if (chr_counter >= MAX_CHARACTERISTICS) {
+      return NULL;
+    }
+    return (ble_gatt_chr *)memcpy(&characteristics[chr_counter++], chr,
+                                  sizeof(ble_gatt_chr));
+  }
+
+private:
+  uint8_t chr_counter = 0; //! current characteristics count
+};
+
+class DeviceConnection {
+public:
+  static const uint8_t MAX_SERVICES = 16;
+  uint16_t conn_handle;
+  DeviceService services[MAX_SERVICES];
+
+  //! Adds a ble service to the cache and returns a pointer to the cached
+  //! service on success, otherwise NULL
+  DeviceService *add_service(const ble_gatt_svc *svc) {
+    if (!svc) {
+      return NULL;
+    }
+    if (svc_counter >= MAX_SERVICES) {
+      return NULL;
+    }
+    DeviceService *deviceService = &services[svc_counter];
+    ++svc_counter;
+    memcpy(&(deviceService->service), svc, sizeof(ble_gatt_svc));
+    return deviceService;
+  }
+
+  uint8_t count() const { return svc_counter; }
+
+private:
+  uint8_t svc_counter = 0;
+};
 
 static const char *SWITCHBOT_PEER_ADDR = "";
 static const char *tag = "switchbot_controller";
 static uint8_t s_current_phy;
 static ble_addr_t conn_addr;
+static DeviceConnection services;
 
 static int on_gap_event(struct ble_gap_event *event, void *arg);
 
@@ -101,6 +155,65 @@ static esp_err_t connect(const ble_addr_t &addr) {
   return ret;
 }
 
+static void log_uuid128(const uint8_t value[16]) {
+  const uint8_t *uuid = &value[0];
+  // TODO: little endian or big endian?
+  ESP_LOGI(
+      tag,
+      "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+      uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7],
+      uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13], uuid[14],
+      uuid[15]);
+}
+
+// int ble_gatt_chr_fn(uint16_t conn_handle,
+//                            const struct ble_gatt_error *error,
+//                             const struct ble_gatt_chr *chr, void *arg);
+static int on_chr_disc_event(uint16_t conn_handle,
+                             const struct ble_gatt_error *error,
+                             const struct ble_gatt_chr *chr, void *arg) {
+  if (!chr) {
+    if (error) {
+      return error->status;
+    }
+    return 1;
+  }
+  ESP_LOGI(tag, "Characteristics discovered: uuid.type: %d val_handle: %d",
+           chr->uuid.u.type, chr->val_handle);
+  if (error && error->status != ESP_OK) {
+    ESP_LOGE(tag, "Error discovering characteristic: error.status: %d",
+             error->status);
+    return error->status;
+  }
+  DeviceService *deviceService = (DeviceService *)arg;
+  if (!deviceService) {
+    ESP_LOGE(tag, "No DeviceService argument provided to characteristic "
+                  "discovery callback");
+  } else {
+    deviceService->add_characteristic(chr);
+  }
+  switch (chr->uuid.u.type) {
+  case 16: {
+    ESP_LOGI(tag, "Characteristics-UUID16: %042x", chr->uuid.u16.value);
+    break;
+  }
+  case 128: {
+    ESP_LOGI(tag, "Characteristics-UUID128:");
+    log_uuid128(chr->uuid.u128.value);
+    break;
+  }
+  default:
+    ESP_LOGE(tag, "Unknown Characteristics UUID type: %d", chr->uuid.u.type);
+    return 1;
+  }
+  ESP_LOGI(tag, "Sending...");
+  const uint8_t press[] = {0x57, 0x01};
+  const uint8_t on[] = {0x57, 0x01, 0x01};
+  ble_gattc_write_no_rsp(conn_handle, chr->val_handle,
+                         ble_hs_mbuf_from_flat(on, 3));
+  return 0;
+}
+
 // int ble_gatt_disc_svc_fn(uint16_t conn_handle,
 //                                 const struct ble_gatt_error *error,
 //                                 const struct ble_gatt_svc *service,
@@ -116,21 +229,27 @@ static int on_svc_disc_event(uint16_t conn_handle,
   }
   ESP_LOGI(tag, "Service discovered: uuid.type: %d error: %d",
            service->uuid.u.type, error->status);
+
+  if (error && error->status != 0) {
+    ESP_LOGE(tag, "Error service discovery: error.status: %d", error->status);
+    return error->status;
+  }
+  auto cached_svc = services.add_service(service);
+  if (!cached_svc) {
+    ESP_LOGE(tag, "Could not add new service to cache!");
+  }
+
   switch (service->uuid.u.type) {
   case 16: {
-    // TODO: little endian or big endian?
-    ESP_LOGI(tag, "%042x", service->uuid.u16.value);
+    ESP_LOGI(tag, "Service-UUID16: %042x", service->uuid.u16.value);
     break;
   }
   case 128: {
-    const uint8_t *uuid = &(service->uuid.u128.value[0]);
-    // TODO: little endian or big endian?
-    ESP_LOGI(
-        tag,
-        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-        uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7],
-        uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13], uuid[14],
-        uuid[15]);
+    ESP_LOGI(tag, "Service-UUID128:");
+    log_uuid128(service->uuid.u128.value);
+    ble_gattc_disc_all_chrs(services.conn_handle, service->start_handle,
+                            service->end_handle, on_chr_disc_event,
+                            (void *)cached_svc);
     break;
   }
   default:
@@ -174,6 +293,7 @@ static int on_gap_event(struct ble_gap_event *event, void *arg) {
   case BLE_GAP_EVENT_LINK_ESTAB: { // 38
     if (event->link_estab.status == ESP_OK) {
       ESP_LOGI(tag, "Link established!");
+      services.conn_handle = event->link_estab.conn_handle;
       ble_gattc_disc_all_svcs(event->link_estab.conn_handle, on_svc_disc_event,
                               NULL);
     } else {
