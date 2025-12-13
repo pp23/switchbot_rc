@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "esp_log_buffer.h"
 #include "host/ble_gap.h"
+#include "host/ble_gatt.h"
 #include "host/ble_hs_adv.h"
 #include "host/ble_hs_id.h"
 #include "nimble/ble.h"
@@ -100,6 +101,44 @@ static esp_err_t connect(const ble_addr_t &addr) {
   return ret;
 }
 
+// int ble_gatt_disc_svc_fn(uint16_t conn_handle,
+//                                 const struct ble_gatt_error *error,
+//                                 const struct ble_gatt_svc *service,
+//                                 void *arg);
+static int on_svc_disc_event(uint16_t conn_handle,
+                             const struct ble_gatt_error *error,
+                             const struct ble_gatt_svc *service, void *arg) {
+  if (service == NULL) {
+    if (error != NULL) {
+      return error->status;
+    }
+    return 1;
+  }
+  ESP_LOGI(tag, "Service discovered: uuid.type: %d error: %d",
+           service->uuid.u.type, error->status);
+  switch (service->uuid.u.type) {
+  case 16: {
+    // TODO: little endian or big endian?
+    ESP_LOGI(tag, "%042x", service->uuid.u16.value);
+    break;
+  }
+  case 128: {
+    const uint8_t *uuid = &(service->uuid.u128.value[0]);
+    // TODO: little endian or big endian?
+    ESP_LOGI(
+        tag,
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7],
+        uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13], uuid[14],
+        uuid[15]);
+    break;
+  }
+  default:
+    ESP_LOGE(tag, "Unknown Service UUI Type: %d", service->uuid.u.type);
+  }
+  return error->status;
+}
+
 static int on_gap_event(struct ble_gap_event *event, void *arg) {
   ESP_LOGI(tag, "BLE Event received: %d", event->type);
   switch (event->type) {
@@ -135,6 +174,8 @@ static int on_gap_event(struct ble_gap_event *event, void *arg) {
   case BLE_GAP_EVENT_LINK_ESTAB: { // 38
     if (event->link_estab.status == ESP_OK) {
       ESP_LOGI(tag, "Link established!");
+      ble_gattc_disc_all_svcs(event->link_estab.conn_handle, on_svc_disc_event,
+                              NULL);
     } else {
       ESP_LOGE(tag, "Could not establish link to switchbot: 0x%02x",
                event->link_estab.status);
