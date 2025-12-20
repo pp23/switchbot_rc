@@ -1,32 +1,42 @@
 // #include "bt/host/nimble/esp-hci/include/esp_nimble_hci.h"
+#include "esp_bit_defs.h"
 #include "esp_err.h"
+#include "esp_event.h"
+#include "esp_event_base.h"
 #include "esp_log.h"
-#include "esp_log_buffer.h"
-#include "host/ble_gap.h"
+#include "esp_netif_types.h"
+#include "esp_wifi_types_generic.h"
+#include "freertos/idf_additions.h"
+#include "freertos/projdefs.h"
 #include "host/ble_gatt.h"
-#include "host/ble_hs_adv.h"
-#include "host/ble_hs_id.h"
-#include "nimble/ble.h"
-#include "nimble/hci_common.h"
 #include "nvs_flash.h"
 
-#include "host/ble_gap.h"
 #include "host/ble_hs.h"
-#include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
-#include "os/os_mbuf.h"
-#include "services/gap/ble_svc_gap.h"
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <stdio.h>
 
-#include "device/device_connection.h"
+#include "esp_http_server.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
+
+#include "portmacro.h"
 #include "switchbot.h"
 
-static const char* tag = "main";
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT BIT1
+
+#define WIFI_SSID CONFIG_WIFI_SSID         // passed in on build via env vars
+#define WIFI_PASSWORD CONFIG_WIFI_PASSWORD // passed in on build via env vars
+
+static const char *tag = "main";
+static EventGroupHandle_t s_wifi_event_group;
+static const uint8_t MAX_WIFI_CONNECT_RETRIES = 3;
+static const uint8_t WIFI_CONNECT_RETRY_DELAY_SEC = 30;
+static uint8_t wifi_connect_retry_counter = 0;
 
 static void main_task(void *param) {
   ESP_LOGI(tag, "BLE Main Task Started");
@@ -35,12 +45,84 @@ static void main_task(void *param) {
 }
 
 static SwitchBot switchbot;
-static void sync_cb(){
-    switchbot.on_sync();
+static void sync_cb() { switchbot.on_sync(); }
+static void reset_cb(int reason) { switchbot.on_reset(reason); }
+
+void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
+                   void *event_data) {
+  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+    ESP_LOGI(tag, "Wifi STA start");
+    esp_wifi_connect();
+  } else if (event_base == WIFI_EVENT &&
+             event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    ESP_LOGE(tag, "Wifi disconnect. Retrying %d/%d", wifi_connect_retry_counter,
+             MAX_WIFI_CONNECT_RETRIES);
+    if (wifi_connect_retry_counter++ < MAX_WIFI_CONNECT_RETRIES) {
+      esp_wifi_connect();
+    } else {
+      // xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+      ESP_LOGI(tag, "Waiting %ds until retry", WIFI_CONNECT_RETRY_DELAY_SEC);
+      wifi_connect_retry_counter = 0;
+      vTaskDelay(pdMS_TO_TICKS(WIFI_CONNECT_RETRY_DELAY_SEC * 1000));
+      esp_wifi_connect();
+    }
+  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+    ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+    ESP_LOGI(tag, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
+    xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+  } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+    ESP_LOGI(tag, "Wifi STA connected");
+  } else if (event_base == WIFI_EVENT &&
+             event_id == WIFI_EVENT_HOME_CHANNEL_CHANGE) {
+    ESP_LOGI(tag, "Wifi home channel change");
+  } else {
+    ESP_LOGE(tag, "Unknown event: %s id: %d", event_base, event_id);
+    return;
+  }
 }
-static void reset_cb(int reason){
-  switchbot.on_reset(reason);
+
+void wifi_init_sta() {
+  s_wifi_event_group = xEventGroupCreate();
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_netif_create_default_wifi_sta();
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+  esp_event_handler_instance_t any_id;
+  esp_event_handler_instance_t got_ip;
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(
+      WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, &any_id));
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(
+      IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, &got_ip));
+  wifi_config_t wifi_config;
+  memset(&wifi_config, 0, sizeof(wifi_config));
+  strcpy((char *)wifi_config.sta.ssid, WIFI_SSID);
+  strcpy((char *)wifi_config.sta.password, WIFI_PASSWORD);
+
+  wifi_config.sta.bssid_set = false;
+  wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+  wifi_config.sta.pmf_cfg.capable = true;
+  wifi_config.sta.pmf_cfg.required = false;
+
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+  ESP_ERROR_CHECK(esp_wifi_start());
+  ESP_LOGI(tag, "wifi_init_sta finished.");
+  /* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or
+   * connection failed for the maximum number of re-tries (WIFI_FAIL_BIT). The
+   * bits are set by event_handler() (see above) */
+  EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+                                         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                         pdFALSE, pdFALSE, portMAX_DELAY);
+  if (bits & WIFI_CONNECTED_BIT) {
+    ESP_LOGI(tag, "Connected to Wifi SSID: %s", WIFI_SSID);
+  } else if (bits & WIFI_FAIL_BIT) {
+    ESP_LOGE(tag, "Failed to connect to SSID: %s", WIFI_SSID);
+  } else {
+    ESP_LOGE(tag, "Unexpected event: %02x", bits);
+  }
 }
+
 extern "C" void app_main(void) {
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -55,10 +137,21 @@ extern "C" void app_main(void) {
     ESP_LOGE(tag, "Failed to init nimble %d ", ret);
     return;
   }
-  
+
   ble_hs_cfg.reset_cb = reset_cb;
   ble_hs_cfg.sync_cb = sync_cb;
   ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+  // init wifi
+  wifi_init_sta();
+
+  // initialize http server
+  httpd_handle_t server = NULL;
+  httpd_config_t serverConfig = HTTPD_DEFAULT_CONFIG();
+  serverConfig.uri_match_fn = httpd_uri_match_wildcard;
+  ESP_LOGI(tag, "Starting HTTP Server");
+  /*if (esp_err_t err = httpd_start(&server, &serverConfig) != ESP_OK) {
+    ESP_LOGE(tag, "Start server failed: %s", err);
+  }*/
 
   nimble_port_freertos_init(main_task);
 
