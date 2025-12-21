@@ -1,9 +1,23 @@
 #include "switchbot.h"
+#include "device/device_connection.h"
+#include "nimble/ble.h"
+
+class SwitchBotData {
+public:
+  SwitchBotData(SwitchBot *sb) : _sb(sb) {}
+  void set_conn_addr(ble_addr_t conn_addr) { _conn_addr = conn_addr; }
+  ble_addr_t *conn_addr() { return &_conn_addr; }
+  DeviceConnection &device_connection() { return _device_connection; }
+  void update() { _sb->update(); }
+
+private:
+  SwitchBot *_sb;
+  ble_addr_t _conn_addr;
+  DeviceConnection _device_connection;
+};
 
 static const char *tag = "switchbot_controller";
 static uint8_t s_current_phy;
-static ble_addr_t conn_addr;
-static DeviceConnection services;
 
 static int on_gap_event(struct ble_gap_event *event, void *arg);
 
@@ -12,6 +26,28 @@ static int on_gap_event(struct ble_gap_event *event, void *arg);
 static bool is_switchbot(const struct ble_hs_adv_fields &advFields) {
   return advFields.mfg_data_len > 2 && advFields.mfg_data[0] == 0x69 &&
          advFields.mfg_data[1] == 0x09;
+}
+
+SwitchBot::SwitchBot(on_update_fn update_fn)
+    : _data(new SwitchBotData(this)), _update(update_fn) {}
+
+SwitchBot::~SwitchBot() { delete _data; }
+
+void SwitchBot::update() {
+  if (_update) {
+    _update(this);
+  }
+}
+
+void SwitchBot::send_command(CommandIndex cmd) {
+  const uint8_t *cmdData = commands[cmd];
+  DeviceService *mainService = _data->device_connection().mainService;
+  if (!mainService) {
+    return;
+  }
+  uint16_t chrValHandle = mainService->characteristics[0].val_handle;
+  ble_gattc_write_no_rsp(_data->device_connection().conn_handle, chrValHandle,
+                         ble_hs_mbuf_from_flat(cmdData, 3));
 }
 
 void set_default_le_phy(uint8_t tx_phys_mask, uint8_t rx_phys_mask) {
@@ -57,7 +93,7 @@ static const char *addr_to_string(char *out, const ble_addr_t &addr) {
   return out;
 }
 
-static esp_err_t connect(const ble_addr_t &addr) {
+static esp_err_t connect(const ble_addr_t &addr, SwitchBotData *sbd) {
   esp_err_t ret = 0;
   uint8_t own_addr_type;
 #if !(MYNEWT_VAL(BLE_HOST_ALLOW_CONNECT_WITH_SCAN))
@@ -71,9 +107,9 @@ static esp_err_t connect(const ble_addr_t &addr) {
     ESP_LOGE(tag, "Could not infer own address type");
     return ret;
   }
-  memcpy(&conn_addr, &addr, sizeof(ble_addr_t)); // save for later use
+  memcpy(sbd->conn_addr(), &addr, sizeof(ble_addr_t)); // save for later use
   if ((ret = ble_gap_connect(own_addr_type, &addr, 30000, NULL, on_gap_event,
-                             (void *)&conn_addr)) != ESP_OK) {
+                             (void *)sbd)) != ESP_OK) {
     char out[19];
     ESP_LOGE(tag, "Could not connect to %s: %d", addr_to_string(out, addr),
              ret);
@@ -153,6 +189,7 @@ static int on_svc_disc_event(uint16_t conn_handle,
     }
     return 1;
   }
+  SwitchBotData *sbd = (SwitchBotData *)arg;
   ESP_LOGI(tag, "Service discovered: uuid.type: %d error: %d",
            service->uuid.u.type, error->status);
 
@@ -160,7 +197,7 @@ static int on_svc_disc_event(uint16_t conn_handle,
     ESP_LOGE(tag, "Error service discovery: error.status: %d", error->status);
     return error->status;
   }
-  auto cached_svc = services.add_service(service);
+  auto cached_svc = sbd->device_connection().add_service(service);
   if (!cached_svc) {
     ESP_LOGE(tag, "Could not add new service to cache!");
   }
@@ -171,11 +208,13 @@ static int on_svc_disc_event(uint16_t conn_handle,
     break;
   }
   case 128: {
+    // consider a 128bit UUID as main purpose service
+    sbd->device_connection().mainService = cached_svc;
     ESP_LOGI(tag, "Service-UUID128:");
     log_uuid128(service->uuid.u128.value);
-    ble_gattc_disc_all_chrs(services.conn_handle, service->start_handle,
-                            service->end_handle, on_chr_disc_event,
-                            (void *)cached_svc);
+    ble_gattc_disc_all_chrs(sbd->device_connection().conn_handle,
+                            service->start_handle, service->end_handle,
+                            on_chr_disc_event, (void *)cached_svc);
     break;
   }
   default:
@@ -184,7 +223,8 @@ static int on_svc_disc_event(uint16_t conn_handle,
   return error->status;
 }
 
-static int on_gap_event(struct ble_gap_event *event, void *arg) {
+int on_gap_event(struct ble_gap_event *event, void *arg) {
+  SwitchBotData *sbd = (SwitchBotData *)arg;
   ESP_LOGI(tag, "BLE Event received: %d", event->type);
   switch (event->type) {
   case BLE_GAP_EVENT_EXT_DISC: { // 19
@@ -199,7 +239,7 @@ static int on_gap_event(struct ble_gap_event *event, void *arg) {
       char buf[19];
       ESP_LOGI(tag, "Attempt to connect to %s",
                addr_to_string(buf, event->ext_disc.addr));
-      ESP_ERROR_CHECK(connect(event->ext_disc.addr));
+      ESP_ERROR_CHECK(connect(event->ext_disc.addr, sbd));
     }
     break;
   }
@@ -219,9 +259,9 @@ static int on_gap_event(struct ble_gap_event *event, void *arg) {
   case BLE_GAP_EVENT_LINK_ESTAB: { // 38
     if (event->link_estab.status == ESP_OK) {
       ESP_LOGI(tag, "Link established!");
-      services.conn_handle = event->link_estab.conn_handle;
+      sbd->device_connection().conn_handle = event->link_estab.conn_handle;
       ble_gattc_disc_all_svcs(event->link_estab.conn_handle, on_svc_disc_event,
-                              NULL);
+                              (void *)sbd);
     } else {
       ESP_LOGE(tag, "Could not establish link to switchbot: 0x%02x",
                event->link_estab.status);
@@ -268,6 +308,6 @@ void SwitchBot::on_sync(void) {
   disc_params.filter_policy = 0;
   disc_params.limited = 0;
   ret = ble_gap_disc(own_addr_type, BLE_HS_FOREVER, &disc_params, on_gap_event,
-                     NULL);
+                     (void *)&_data);
   ESP_ERROR_CHECK(ret);
 }

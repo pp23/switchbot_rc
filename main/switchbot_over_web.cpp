@@ -56,7 +56,9 @@ static void main_task(void *param) {
   nimble_port_freertos_deinit();
 }
 
-static SwitchBot switchbot;
+void on_switchbot_data_update(SwitchBot *sb) {}
+SwitchBot::on_update_fn sb_update_fn = &on_switchbot_data_update;
+static SwitchBot switchbot(sb_update_fn);
 static void sync_cb() { switchbot.on_sync(); }
 static void reset_cb(int reason) { switchbot.on_reset(reason); }
 

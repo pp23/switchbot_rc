@@ -3,14 +3,16 @@
 
 #include <cstdint>
 
-#include "host/ble_gatt.h"
 #include "device_service.h"
+#include "host/ble_gatt.h"
 
 class DeviceConnection {
 public:
   static const uint8_t MAX_SERVICES = 16;
   uint16_t conn_handle;
   DeviceService services[MAX_SERVICES];
+  DeviceService *mainService = NULL; // service with a 128bit UUID considered as
+                                     // devices purpose service
 
   //! Adds a ble service to the cache and returns a pointer to the cached
   //! service on success, otherwise NULL
