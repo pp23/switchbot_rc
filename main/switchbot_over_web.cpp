@@ -9,6 +9,9 @@
 #include "freertos/idf_additions.h"
 #include "freertos/projdefs.h"
 #include "host/ble_gatt.h"
+#include "http_parser.h"
+#include "lwip/sockets.h"
+#include "net/if.h"
 #include "nvs_flash.h"
 
 #include "host/ble_hs.h"
@@ -17,7 +20,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <sys/socket.h>
 
 #include "esp_http_server.h"
 #include "esp_netif.h"
@@ -31,6 +36,13 @@
 
 #define WIFI_SSID CONFIG_WIFI_SSID         // passed in on build via env vars
 #define WIFI_PASSWORD CONFIG_WIFI_PASSWORD // passed in on build via env vars
+
+#define SCRATCH_BUFSIZE (10240)
+
+typedef struct rest_server_context {
+  // char base_path[ESP_VFS_PATH_MAX + 1];
+  char scratch[SCRATCH_BUFSIZE];
+} rest_server_context_t;
 
 static const char *tag = "main";
 static EventGroupHandle_t s_wifi_event_group;
@@ -123,6 +135,23 @@ void wifi_init_sta() {
   }
 }
 
+esp_err_t root_get_handler(httpd_req_t *req) {
+  int sockfd = httpd_req_to_sockfd(req);
+  char ipstr[INET6_ADDRSTRLEN];
+  struct sockaddr_in6 addr; // esp_http_server uses IPv6 addressing
+  socklen_t addr_size = sizeof(addr);
+  if (getpeername(sockfd, (struct sockaddr *)&addr, &addr_size) < 0) {
+    ESP_LOGE(tag, "Error getting client IP");
+  } else {
+    // read the IPv4 remote IP
+    inet_ntop(AF_INET, &addr.sin6_addr.un.u32_addr[3], ipstr, sizeof(ipstr));
+  }
+  ESP_LOGI(tag, "GET / from %s", ipstr);
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_sendstr(req, "Hello world");
+  return ESP_OK;
+}
+
 extern "C" void app_main(void) {
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -145,13 +174,22 @@ extern "C" void app_main(void) {
   wifi_init_sta();
 
   // initialize http server
+  rest_server_context_t *restContext =
+      (rest_server_context_t *)calloc(1, sizeof(rest_server_context_t));
   httpd_handle_t server = NULL;
   httpd_config_t serverConfig = HTTPD_DEFAULT_CONFIG();
   serverConfig.uri_match_fn = httpd_uri_match_wildcard;
   ESP_LOGI(tag, "Starting HTTP Server");
-  /*if (esp_err_t err = httpd_start(&server, &serverConfig) != ESP_OK) {
+  if (esp_err_t err = httpd_start(&server, &serverConfig) != ESP_OK) {
     ESP_LOGE(tag, "Start server failed: %s", err);
-  }*/
+  }
+  httpd_uri_t root_get_uri = {
+      .uri = "/",
+      .method = HTTP_GET,
+      .handler = root_get_handler,
+      .user_ctx = restContext,
+  };
+  httpd_register_uri_handler(server, &root_get_uri);
 
   nimble_port_freertos_init(main_task);
 
