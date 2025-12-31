@@ -2,9 +2,16 @@
 #define DEVICECONNECTION_H
 
 #include <cstdint>
+#include <cstring>
 
 #include "device_service.h"
 #include "host/ble_gatt.h"
+#include "nimble/ble.h"
+
+static bool operator==(const ble_addr_t &a, const ble_addr_t &b) {
+  return a.type == b.type && memcmp((const void *)a.val, (const void *)b.val,
+                                    sizeof(uint8_t) * 6) == 0;
+}
 
 class DeviceConnection {
 public:
@@ -13,6 +20,12 @@ public:
   DeviceService services[MAX_SERVICES];
   DeviceService *mainService = NULL; // service with a 128bit UUID considered as
                                      // devices purpose service
+
+  void set_addr(const ble_addr_t *addr) {
+    memcpy((void *)&conn_addr, (const void *)addr,
+           sizeof(ble_addr_t)); // save for later use
+  }
+  ble_addr_t get_addr() const { return conn_addr; }
 
   //! Adds a ble service to the cache and returns a pointer to the cached
   //! service on success, otherwise NULL
@@ -33,5 +46,6 @@ public:
 
 private:
   uint8_t svc_counter = 0;
+  ble_addr_t conn_addr;
 };
 #endif

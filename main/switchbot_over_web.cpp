@@ -56,8 +56,8 @@ static void main_task(void *param) {
   nimble_port_freertos_deinit();
 }
 
-void on_switchbot_data_update(SwitchBot *sb) {}
-SwitchBot::on_update_fn sb_update_fn = &on_switchbot_data_update;
+void on_switchbot_data_update(SwitchBot *sb) { return; }
+SwitchBot::on_update_fn sb_update_fn = on_switchbot_data_update;
 static SwitchBot switchbot(sb_update_fn);
 static void sync_cb() { switchbot.on_sync(); }
 static void reset_cb(int reason) { switchbot.on_reset(reason); }
@@ -173,25 +173,25 @@ extern "C" void app_main(void) {
   ble_hs_cfg.sync_cb = sync_cb;
   ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
   // init wifi
-  wifi_init_sta();
-
-  // initialize http server
-  rest_server_context_t *restContext =
-      (rest_server_context_t *)calloc(1, sizeof(rest_server_context_t));
-  httpd_handle_t server = NULL;
-  httpd_config_t serverConfig = HTTPD_DEFAULT_CONFIG();
-  serverConfig.uri_match_fn = httpd_uri_match_wildcard;
-  ESP_LOGI(tag, "Starting HTTP Server");
-  if (esp_err_t err = httpd_start(&server, &serverConfig) != ESP_OK) {
-    ESP_LOGE(tag, "Start server failed: %s", err);
-  }
-  httpd_uri_t root_get_uri = {
-      .uri = "/",
-      .method = HTTP_GET,
-      .handler = root_get_handler,
-      .user_ctx = restContext,
-  };
-  httpd_register_uri_handler(server, &root_get_uri);
+  // wifi_init_sta();
+  //
+  // // initialize http server
+  // rest_server_context_t *restContext =
+  //     (rest_server_context_t *)calloc(1, sizeof(rest_server_context_t));
+  // httpd_handle_t server = NULL;
+  // httpd_config_t serverConfig = HTTPD_DEFAULT_CONFIG();
+  // serverConfig.uri_match_fn = httpd_uri_match_wildcard;
+  // ESP_LOGI(tag, "Starting HTTP Server");
+  // if (esp_err_t err = httpd_start(&server, &serverConfig) != ESP_OK) {
+  //   ESP_LOGE(tag, "Start server failed: %s", err);
+  // }
+  // httpd_uri_t root_get_uri = {
+  //     .uri = "/",
+  //     .method = HTTP_GET,
+  //     .handler = root_get_handler,
+  //     .user_ctx = restContext,
+  // };
+  // httpd_register_uri_handler(server, &root_get_uri);
 
   nimble_port_freertos_init(main_task);
 
