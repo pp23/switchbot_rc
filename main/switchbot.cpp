@@ -1,8 +1,12 @@
 #include "switchbot.h"
 #include "device/device_connection.h"
 #include "esp_err.h"
+#include "esp_event.h"
+#include "esp_event_base.h"
 #include "esp_log.h"
 #include "esp_log_buffer.h"
+#include "host/ble_gap.h"
+#include "host/ble_hs.h"
 #include "host/ble_hs_adv.h"
 #include "nimble/ble.h"
 #include <cstdint>
@@ -31,8 +35,18 @@ class BLDeviceController {
 public:
   static const uint8_t MAX_DEVICES = 4;
 
+  //! Returns a registered connection with the given conn_handle or NULL
+  DeviceConnection *find(uint16_t conn_handle) {
+    for (uint8_t i = 0; i < MAX_DEVICES; ++i) {
+      if (_devices[i].conn_handle == conn_handle) {
+        return &_devices[i];
+      }
+    }
+    return NULL;
+  }
+
   //! Returns a registered connection with the given address or NULL
-  const DeviceConnection *find(const ble_addr_t &addr) {
+  DeviceConnection *find(const ble_addr_t &addr) {
     for (uint8_t i = 0; i < MAX_DEVICES; ++i) {
       if (_devices[i].get_addr() == addr) {
         return &_devices[i];
@@ -60,13 +74,38 @@ private:
   uint8_t _deviceCounter = 0;
 };
 
+esp_err_t connect(const ble_addr_t &addr, DeviceConnection *dc);
+
+struct ble_npl_event schedule_event;
+
 static BLDeviceController gDeviceController;
 static SwitchBotData gSwitchBotData;
+static DeviceConnection *sbconn = NULL;
 
 static const char *tag = "switchbot_controller";
 static uint8_t s_current_phy;
 
 static int on_gap_event(struct ble_gap_event *event, void *arg);
+
+static const esp_event_base_t bleEventBase = "ble_event";
+static const int32_t BUTTON_PRESSED_EVENT = 1;
+void on_button_pressed(void *args, esp_event_base_t base, int32_t id,
+                       void *event_data) {
+  ESP_LOGI(tag, "Event scheduled");
+  const ble_gap_event *event = (const ble_gap_event *)event_data;
+  if (event->notify_rx.conn_handle ==
+      sbconn->conn_handle) { // data from switchbot not yet processed
+    return;
+  }
+  if (!sbconn->connected) {
+    ESP_ERROR_CHECK(connect(sbconn->get_addr(), sbconn));
+  } else {
+    const uint8_t on[] = {0x57, 0x01, 0x01};
+    ble_gattc_write_no_rsp(sbconn->conn_handle,
+                           sbconn->mainService->characteristics[1].val_handle,
+                           ble_hs_mbuf_from_flat(on, 3));
+  }
+}
 
 //! Checks the advertisement data for manufacturer ID of switchbot 0x0969
 //! (littleendian) Woan Technology
@@ -148,7 +187,7 @@ static const char *addr_to_string(char *out, const ble_addr_t &addr) {
   return out;
 }
 
-static esp_err_t connect(const ble_addr_t &addr, DeviceConnection *dc) {
+esp_err_t connect(const ble_addr_t &addr, DeviceConnection *dc) {
   esp_err_t ret = 0;
   uint8_t own_addr_type;
   if (!dc) {
@@ -173,6 +212,16 @@ static esp_err_t connect(const ble_addr_t &addr, DeviceConnection *dc) {
     char out[19];
     ESP_LOGE(tag, "Could not connect to %s: %d", addr_to_string(out, addr),
              ret);
+    if (ret == BLE_HS_EALREADY) {
+      ESP_LOGE(tag, "ERROR: Connection attempt already in progress");
+
+    } else if (ret == BLE_HS_EBUSY) {
+      ESP_LOGE(tag,
+               "ERROR: Connecting not possible due to scanning in progress");
+
+    } else if (ret == BLE_HS_EDONE) {
+      ESP_LOGE(tag, "ERROR: Already connected");
+    }
     return ret;
   }
   return ret;
@@ -229,10 +278,6 @@ static int on_chr_disc_event(uint16_t conn_handle,
     ESP_LOGE(tag, "Unknown Characteristics UUID type: %d", chr->uuid.u.type);
     return 1;
   }
-  // ESP_LOGI(tag, "Sending...");
-  // const uint8_t on[] = {0x57, 0x01, 0x01};
-  // ble_gattc_write_no_rsp(conn_handle, chr->val_handle,
-  //                       ble_hs_mbuf_from_flat(on, 3));
   return 0;
 }
 
@@ -249,8 +294,8 @@ static int on_svc_disc_event(uint16_t conn_handle,
     }
     return 1;
   }
-  SwitchBotData *sbd = (SwitchBotData *)arg;
-  if (!sbd) {
+  DeviceConnection *dc = (DeviceConnection *)arg;
+  if (!dc) {
     ESP_LOGE(tag, "ERROR: Passed argument is null");
     return 1;
   }
@@ -261,7 +306,7 @@ static int on_svc_disc_event(uint16_t conn_handle,
     ESP_LOGE(tag, "Error service discovery: error.status: %d", error->status);
     return error->status;
   }
-  auto cached_svc = sbd->device_connection().add_service(service);
+  auto cached_svc = dc->add_service(service);
   if (!cached_svc) {
     ESP_LOGE(tag, "Could not add new service to cache!");
   }
@@ -275,10 +320,10 @@ static int on_svc_disc_event(uint16_t conn_handle,
     ESP_LOGI(tag, "Service-UUID128:");
     log_uuid128(service->uuid.u128.value);
     // consider a 128bit UUID as main purpose service
-    sbd->device_connection().mainService = cached_svc;
-    ble_gattc_disc_all_chrs(sbd->device_connection().conn_handle,
-                            service->start_handle, service->end_handle,
-                            on_chr_disc_event, (void *)cached_svc);
+    dc->mainService = cached_svc;
+    ble_gattc_disc_all_chrs(dc->conn_handle, service->start_handle,
+                            service->end_handle, on_chr_disc_event,
+                            (void *)cached_svc);
     break;
   }
   default:
@@ -312,11 +357,14 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
       ESP_LOGI(tag, "AdvertisingFields:");
       ESP_LOGI(tag, "mfg:");
       ESP_LOG_BUFFER_HEX(tag, advFields.mfg_data, advFields.mfg_data_len);
-      char buf[19];
-      ESP_LOGI(tag, "Attempt to connect to %s",
-               addr_to_string(buf, event->ext_disc.addr));
-      ESP_ERROR_CHECK(
-          connect(event->ext_disc.addr, gDeviceController.create()));
+      if (sbconn == NULL) {
+        sbconn = gDeviceController.create();
+        sbconn->set_addr(&event->ext_disc.addr);
+        char buf[19];
+        ESP_LOGI(tag, "Attempt to connect to %s",
+                 addr_to_string(buf, event->ext_disc.addr));
+        ESP_ERROR_CHECK(connect(sbconn->get_addr(), sbconn));
+      }
     }
     break;
   }
@@ -337,19 +385,51 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
   case BLE_GAP_EVENT_LINK_ESTAB: { // 38
     if (event->link_estab.status == ESP_OK) {
       ESP_LOGI(tag, "Link established!");
-      sbd->device_connection().conn_handle = event->link_estab.conn_handle;
+      DeviceConnection *dc = (DeviceConnection *)
+          arg; // EVENT_LINK_ESTAB gets same arg as EVENT_CONNECT
+      dc->conn_handle = event->link_estab.conn_handle;
+      dc->connected = true;
       ble_gattc_disc_all_svcs(event->link_estab.conn_handle, on_svc_disc_event,
-                              (void *)sbd);
+                              (void *)dc);
     } else {
       ESP_LOGE(tag, "Could not establish link to switchbot: 0x%02x",
                event->link_estab.status);
     }
     break;
   }
+  case BLE_GAP_EVENT_L2CAP_UPDATE_REQ: { // 5
+    ESP_LOGI(tag,
+             "MinInterval: %d, MaxInterval: %d, Latency: %d, Timeout: %d, "
+             "min_ce_len:%d,max_ce_len:%d",
+             event->conn_update_req.peer_params->itvl_min,
+             event->conn_update_req.peer_params->itvl_max,
+             event->conn_update_req.peer_params->latency,
+             event->conn_update_req.peer_params->supervision_timeout,
+             event->conn_update_req.peer_params->min_ce_len,
+             event->conn_update_req.peer_params->max_ce_len);
+    return 0;
+    break;
+  }
   case BLE_GAP_EVENT_DISCONNECT: { // 1
     // reasons:
     // https://mynewt.apache.org/master/network/ble_hs/ble_hs_return_codes.html
     ESP_LOGI(tag, "Disconnect. reason=0x%02x", event->disconnect.reason);
+    DeviceConnection *dc =
+        gDeviceController.find(event->disconnect.conn.conn_handle);
+    if (!dc) { // no registered connection with this conn_handle
+      ESP_LOGE(tag, "WARNING: No device connection found with conn_handle %d",
+               event->disconnect.conn.conn_handle);
+    } else {
+      dc->connected = false;
+    }
+    break;
+  }
+  case BLE_GAP_EVENT_NOTIFY_RX: { // 12
+    ESP_LOGI(tag, "NOTIFY_RX: conn_handle: %d attr_handle: %d attr_len: %d ",
+             event->notify_rx.conn_handle, event->notify_rx.attr_handle,
+             OS_MBUF_PKTLEN(event->notify_rx.om));
+    esp_event_post(bleEventBase, BUTTON_PRESSED_EVENT, (const void *)event,
+                   sizeof(ble_gap_event), 1000);
     break;
   }
   default:
@@ -365,6 +445,9 @@ void SwitchBot::on_sync(void) {
 
   ESP_LOGI(tag, "Syncing.");
 
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_event_handler_instance_register(bleEventBase, BUTTON_PRESSED_EVENT,
+                                      on_button_pressed, NULL, NULL);
   // ensure proper identity address
   ret = ble_hs_util_ensure_addr(0);
   ESP_ERROR_CHECK(ret);

@@ -16,6 +16,7 @@ static bool operator==(const ble_addr_t &a, const ble_addr_t &b) {
 class DeviceConnection {
 public:
   static const uint8_t MAX_SERVICES = 16;
+  bool connected = false;
   uint16_t conn_handle;
   DeviceService services[MAX_SERVICES];
   DeviceService *mainService = NULL; // service with a 128bit UUID considered as
