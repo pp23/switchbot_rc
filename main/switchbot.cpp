@@ -6,11 +6,14 @@
 #include "esp_event_base.h"
 #include "esp_log.h"
 #include "esp_log_buffer.h"
+#include "freertos/idf_additions.h"
+#include "freertos/projdefs.h"
 #include "host/ble_gap.h"
 #include "host/ble_hs.h"
 #include "host/ble_hs_adv.h"
 #include "nimble/ble.h"
 #include "os/os_mbuf.h"
+#include "portmacro.h"
 #include <cstddef>
 #include <cstdint>
 #include <sys/types.h>
@@ -34,7 +37,8 @@ private:
   DeviceConnection _device_connection;
 };
 
-//! Return the BLEDevice if it matches the advertising fields
+//! Return the BLEDevice if it matches the advertising fields.
+//! Thread safe as long as roles do not change during runtime.
 template <typename... BLEDevices>
 constexpr IBLEDeviceRole *BLDeviceController<BLEDevices...>::find_role(
     const struct ble_hs_adv_fields &advFields) {
@@ -50,11 +54,19 @@ constexpr IBLEDeviceRole *BLDeviceController<BLEDevices...>::find_role(
 template <typename... BLEDevices>
 DeviceConnection *
 BLDeviceController<BLEDevices...>::find(uint16_t conn_handle) {
+  if (xSemaphoreTake(_accessMtx, MAX_MTX_WAIT_TICKS) != pdTRUE) {
+    ESP_LOGE("core", "Could not obtain mutex!");
+    return NULL;
+  }
+  ESP_LOGI("core", "Searching for connection with conn_handle: %d",
+           conn_handle);
   for (DeviceConnection &conn : _connection_pool) {
-    if (conn.conn_handle == conn_handle) {
+    if (conn.conn_handle() == conn_handle) {
+      xSemaphoreGive(_accessMtx);
       return &conn;
     }
   }
+  xSemaphoreGive(_accessMtx);
   return NULL;
 }
 
@@ -62,24 +74,58 @@ BLDeviceController<BLEDevices...>::find(uint16_t conn_handle) {
 template <typename... BLEDevices>
 DeviceConnection *
 BLDeviceController<BLEDevices...>::find(const ble_addr_t &addr) {
+  if (xSemaphoreTake(_accessMtx, MAX_MTX_WAIT_TICKS) != pdTRUE) {
+    ESP_LOGE("core", "Could not obtain mutex!");
+    return NULL;
+  }
   for (DeviceConnection &conn : _connection_pool) {
     if (conn.get_addr() == addr) {
+      xSemaphoreGive(_accessMtx);
       return &conn;
     }
   }
+  xSemaphoreGive(_accessMtx);
+  return NULL;
+}
+
+template <typename... BLEDevices>
+DeviceConnection *
+BLDeviceController<BLEDevices...>::find(const char *role_name) {
+  if (xSemaphoreTake(_accessMtx, MAX_MTX_WAIT_TICKS) != pdTRUE) {
+    ESP_LOGE("core", "Could not obtain mutex!");
+    return NULL;
+  }
+  ESP_LOGI("core", "Searching for role with role_name %s", role_name);
+  for (DeviceConnection &conn : _connection_pool) {
+    if (!conn.role()) {
+      continue;
+    }
+    if (strcmp(conn.role()->role_name(), role_name) == 0) {
+      xSemaphoreGive(_accessMtx);
+      return &conn;
+    }
+  }
+  xSemaphoreGive(_accessMtx);
   return NULL;
 }
 
 //! Creates a new device. Returns NULL if MAX_DEVICES reached.
 template <typename... BLEDevices>
 DeviceConnection *BLDeviceController<BLEDevices...>::create() {
-  if (connection_count() < MAX_CONNECTIONS) {
+  if (xSemaphoreTake(_accessMtx, MAX_MTX_WAIT_TICKS) != pdTRUE) {
+    ESP_LOGE("core", "Could not obtain mutex!");
+    return NULL;
+  }
+  if (_connection_count() < MAX_CONNECTIONS) {
     for (DeviceConnection &conn : _connection_pool) {
-      if (!conn.connected) {
+      if (!conn.in_use()) {
+        conn.set_inuse(true);
+        xSemaphoreGive(_accessMtx);
         return &conn;
       }
     }
   }
+  xSemaphoreGive(_accessMtx);
   return NULL;
 }
 
@@ -109,6 +155,7 @@ void on_rx_data(void *args, esp_event_base_t base, int32_t id,
     ESP_LOGE(tag, "ERROR: No role set for connection!");
     return;
   }
+  ESP_LOGI(tag, "Calling role %s", role->role_name());
   role->on_data(&event);
   // if (!sbconn->connected) {
   //   ESP_ERROR_CHECK(connect(sbconn->get_addr(), sbconn));
@@ -133,14 +180,33 @@ void SwitchBot::update() {
   }
 }
 
-void SwitchBot::send_command(CommandIndex cmd) {
-  const uint8_t *cmdData = commands[cmd];
-  DeviceService *mainService = _data->device_connection().mainService;
+void SwitchBot::send_command(DeviceConnection *conn, Command cmd) {
+  static const uint8_t MAX_TIMEOUT_COUNTER = 30;
+  if (!conn->is_connected()) {
+    ESP_LOGI(tag, "Connecting to SwitchBot...%s", conn->str().c_str());
+    ESP_ERROR_CHECK(connect(conn->get_addr(), conn));
+    // TODO: refactor. no busy waiting.
+    uint8_t i = 0;
+    while (!conn->is_link_established() && ++i <= MAX_TIMEOUT_COUNTER) {
+      ESP_LOGI(tag, "Still connecting to SwitchBot...%d/%d", i,
+               MAX_TIMEOUT_COUNTER);
+      vTaskDelay(500 / portTICK_PERIOD_MS);
+    }
+    if (i >= MAX_TIMEOUT_COUNTER) {
+      ESP_LOGE(tag, "Timeout!");
+      return;
+    }
+    ESP_LOGI(tag, "Connected.");
+  }
+  ESP_LOGI(tag, "Sending command %d", cmd);
+  const uint8_t *cmdData = commands[(uint8_t)cmd];
+  const DeviceService *mainService = conn->main_service();
   if (!mainService) {
+    ESP_LOGE(tag, "No MainService set!");
     return;
   }
-  uint16_t chrValHandle = mainService->characteristics[0].val_handle;
-  ble_gattc_write_no_rsp(_data->device_connection().conn_handle, chrValHandle,
+  uint16_t chrValHandle = mainService->characteristics[1].val_handle;
+  ble_gattc_write_no_rsp(conn->conn_handle(), chrValHandle,
                          ble_hs_mbuf_from_flat(cmdData, 3));
 }
 
@@ -202,6 +268,8 @@ esp_err_t connect(const ble_addr_t &addr, DeviceConnection *dc) {
     return ret;
   }
 #endif
+  ESP_LOGI(tag, "Trying to connect to %02x with connection %s", addr.val[5],
+           dc->str().c_str());
   if ((ret = ble_hs_id_infer_auto(0, &own_addr_type)) != ESP_OK) {
     ESP_LOGE(tag, "Could not infer own address type");
     return ret;
@@ -318,8 +386,8 @@ static int on_svc_disc_event(uint16_t conn_handle,
     ESP_LOGI(tag, "Service-UUID128:");
     log_uuid128(service->uuid.u128.value);
     // consider a 128bit UUID as main purpose service
-    dc->mainService = cached_svc;
-    ble_gattc_disc_all_chrs(dc->conn_handle, service->start_handle,
+    dc->set_main_service(cached_svc);
+    ble_gattc_disc_all_chrs(dc->conn_handle(), service->start_handle,
                             service->end_handle, on_chr_disc_event,
                             (void *)cached_svc);
     break;
@@ -342,7 +410,7 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
     IBLEDeviceRole *device = gDeviceController.find_role(advFields);
     ESP_LOGI(tag, "Connection count: %d", gDeviceController.connection_count());
     if (device) {
-      ESP_LOGI(tag, "Device role found");
+      ESP_LOGI(tag, "Device role found: %s", device->role_name());
       // do we know this device already?
       DeviceConnection *conn = gDeviceController.find(event->ext_disc.addr);
       if (conn == NULL) {
@@ -353,11 +421,12 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
           // TODO: Recycle an unused connection
           return ESP_OK;
         }
+        ESP_LOGI(tag, "New connection created: %s", conn->str().c_str());
       } else {
-        ESP_LOGI(tag, "address already known: %02x",
-                 event->ext_disc.addr.val[5]);
+        ESP_LOGI(tag, "address already known: %02x belongs to role %s",
+                 event->ext_disc.addr.val[5], conn->role()->role_name());
       }
-      conn->set_addr(&event->ext_disc.addr);
+      ESP_LOGI(tag, "Conn pointer address: %p", conn);
       if (conn->set_discovery_data(event->ext_disc.data,
                                    event->ext_disc.length_data) == ESP_OK) {
         // notify role about discovery data update
@@ -367,8 +436,10 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
       // e.g. connect always or only on specific conditions
       if (device->can_connect(conn)) {
         ESP_ERROR_CHECK(connect(event->ext_disc.addr, conn));
-        ESP_LOGI(tag, "Connection started. Current connection count: %d",
-                 gDeviceController.connection_count());
+        ESP_LOGI(tag,
+                 "Connection started for connection %s. Current connection "
+                 "count: %d",
+                 conn->str().c_str(), gDeviceController.connection_count());
       }
     }
     break;
@@ -376,8 +447,8 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
   case BLE_GAP_EVENT_CONNECT: {
     DeviceConnection *dc = (DeviceConnection *)arg;
     if (event->connect.status == ESP_OK) {
+      dc->set_conn_handle(event->connect.conn_handle);
       dc->connected = true;
-      dc->conn_handle = event->connect.conn_handle;
     }
     const ble_addr_t addr = dc->get_addr();
     ESP_LOGI(tag, "Connected to %02x:%02x:%02x:%02x:%02x:%02x with type %d",
@@ -395,12 +466,16 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
     if (event->link_estab.status == ESP_OK) {
       DeviceConnection *dc = (DeviceConnection *)
           arg; // EVENT_LINK_ESTAB gets same arg as EVENT_CONNECT
-      dc->conn_handle = event->link_estab.conn_handle;
+      dc->set_conn_handle(event->link_estab.conn_handle);
       dc->connected = true;
+      dc->set_link_established();
       ESP_LOGI(tag, "Connection established. Current connection count: %d",
                gDeviceController.connection_count());
-      ble_gattc_disc_all_svcs(event->link_estab.conn_handle, on_svc_disc_event,
-                              (void *)dc);
+      // discover services/characteristics once
+      if (dc->refresh_required()) {
+        ble_gattc_disc_all_svcs(event->link_estab.conn_handle,
+                                on_svc_disc_event, (void *)dc);
+      }
     } else {
       ESP_LOGE(tag, "Could not establish link to switchbot: 0x%02x",
                event->link_estab.status);
@@ -430,8 +505,7 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
       ESP_LOGE(tag, "WARNING: No device connection found with conn_handle %d",
                event->disconnect.conn.conn_handle);
     } else {
-      dc->connected = false;
-      gDeviceController.remove(dc);
+      dc->reset();
     }
     ESP_LOGI(tag, "Connection removed. Current connection count: %d",
              gDeviceController.connection_count());

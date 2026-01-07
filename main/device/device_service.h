@@ -2,6 +2,7 @@
 #define DEVICESERVICE_H
 
 #include <cstdint>
+#include <cstring>
 
 #include "host/ble_gatt.h"
 
@@ -10,6 +11,12 @@ public:
   static const uint8_t MAX_CHARACTERISTICS = 16;
   ble_gatt_svc service;
   ble_gatt_chr characteristics[MAX_CHARACTERISTICS];
+
+  void clear() {
+    chr_counter = 0;
+    memset((void *)&characteristics[0], 0,
+           sizeof(ble_gatt_chr) * MAX_CHARACTERISTICS);
+  }
 
   operator const ble_gatt_svc *() const { return &(this->service); }
   operator ble_gatt_svc() const { return this->service; }
