@@ -15,12 +15,10 @@
 
 #include "device_role.h"
 
-static bool operator==(const ble_addr_t &a, const ble_addr_t &b) {
+inline bool operator==(const ble_addr_t &a, const ble_addr_t &b) {
   return a.type == b.type && memcmp((const void *)a.val, (const void *)b.val,
                                     sizeof(uint8_t) * 6) == 0;
 }
-
-static uint8_t CONNECTION_COUNTER = 0;
 
 class StringBuf {
 public:
@@ -72,16 +70,10 @@ public:
   static const uint8_t MAX_SERVICES = 16;
   static const uint8_t MAX_DISC_DATA_LEN = 128;
   static const uint16_t INVALID_CONN_HANDLE = 0xffff;
-  uint8_t _count = 0;
   bool connected = false;
   DeviceService services[MAX_SERVICES];
 
-  DeviceConnection() : _conn_handle(INVALID_CONN_HANDLE) {
-    this->_count = ++CONNECTION_COUNTER;
-    ESP_LOGI("dc", "Current global connection count: %d", CONNECTION_COUNTER);
-  }
-
-  uint8_t id() const { return this->_count; }
+  DeviceConnection() : _conn_handle(INVALID_CONN_HANDLE) {}
 
   //! Returns true if this connection just got created and is therefore
   //! requested by a role but might be not yet assigned to a role
@@ -96,8 +88,8 @@ public:
   IBLEDeviceRole *role() const { return _role; }
   bool is_connected() const { return connected; }
   void set_conn_handle(uint16_t conn_handle) {
-    ESP_LOGI("dc", "New conn_handle: %d for role %s conn-id: %d", conn_handle,
-             role()->role_name(), id());
+    ESP_LOGI("dc", "New conn_handle: %d for role %s", conn_handle,
+             role()->role_name());
     this->_conn_handle = conn_handle;
   }
   uint16_t conn_handle() const { return this->_conn_handle; }
@@ -126,14 +118,8 @@ public:
   void set_link_established() { this->_link_established = true; }
   bool is_link_established() const { return this->_link_established; }
 
-  const DeviceService *main_service() const {
-    ESP_LOGI("dc", "main_service() ID: %d", id());
-    return mainService;
-  }
-  void set_main_service(DeviceService *svc) {
-    ESP_LOGI("dc", "set_main_service() ID: %d", id());
-    this->mainService = svc;
-  }
+  const DeviceService *main_service() const { return mainService; }
+  void set_main_service(DeviceService *svc) { this->mainService = svc; }
 
   esp_err_t set_discovery_data(const uint8_t *data, size_t len) {
     if (len > MAX_DISC_DATA_LEN) {

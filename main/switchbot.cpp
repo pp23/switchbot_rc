@@ -18,25 +18,6 @@
 #include <cstdint>
 #include <sys/types.h>
 
-class SwitchBotData {
-public:
-  SwitchBotData() : _sb(NULL) {}
-  void setSwitchBot(SwitchBot *sb) { _sb = sb; }
-  void set_conn_addr(ble_addr_t conn_addr) { _conn_addr = conn_addr; }
-  ble_addr_t *conn_addr() { return &_conn_addr; }
-  DeviceConnection &device_connection() { return _device_connection; }
-  void update() {
-    if (_sb) {
-      _sb->update();
-    }
-  }
-
-private:
-  SwitchBot *_sb;
-  ble_addr_t _conn_addr;
-  DeviceConnection _device_connection;
-};
-
 //! Return the BLEDevice if it matches the advertising fields.
 //! Thread safe as long as roles do not change during runtime.
 template <typename... BLEDevices>
@@ -135,8 +116,6 @@ struct ble_npl_event schedule_event;
 
 static BLDeviceController gDeviceController(new SwitchBot(),
                                             new ShutterButton());
-static SwitchBotData gSwitchBotData;
-static DeviceConnection *sbconn = NULL;
 
 static const char *tag = "switchbot_controller";
 static uint8_t s_current_phy;
@@ -157,20 +136,9 @@ void on_rx_data(void *args, esp_event_base_t base, int32_t id,
   }
   ESP_LOGI(tag, "Calling role %s", role->role_name());
   role->on_data(&event);
-  // if (!sbconn->connected) {
-  //   ESP_ERROR_CHECK(connect(sbconn->get_addr(), sbconn));
-  // } else {
-  //   const uint8_t on[] = {0x57, 0x01, 0x01};
-  //   ble_gattc_write_no_rsp(sbconn->conn_handle,
-  //                          sbconn->mainService->characteristics[1].val_handle,
-  //                          ble_hs_mbuf_from_flat(on, 3));
-  // }
 }
 
-SwitchBot::SwitchBot(on_update_fn update_fn)
-    : _data(&gSwitchBotData), _update(update_fn) {
-  _data->setSwitchBot(this);
-}
+SwitchBot::SwitchBot(on_update_fn update_fn) : _update(update_fn) {}
 
 SwitchBot::~SwitchBot() {}
 
@@ -567,6 +535,6 @@ void SwitchBot::on_sync(void) {
   disc_params.filter_policy = 0;
   disc_params.limited = 0;
   ret = ble_gap_disc(own_addr_type, BLE_HS_FOREVER, &disc_params, on_gap_event,
-                     (void *)&_data);
+                     NULL);
   ESP_ERROR_CHECK(ret);
 }

@@ -66,11 +66,7 @@ public:
   ~RxEvent() {}
 };
 
-class SwitchBotData;
-
 class SwitchBot : public BLEDeviceRole {
-  friend class SwitchBotData;
-
 public:
   //! Checks the advertisement data for manufacturer ID of switchbot 0x0969
   //! (littleendian) Woan Technology
@@ -121,7 +117,6 @@ protected:
   }
 
 private:
-  SwitchBotData *_data;
   on_update_fn _update;
 };
 
