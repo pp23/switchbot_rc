@@ -1,6 +1,6 @@
 #include "device_role.h"
+#include "ble_device_role.h"
 #include "device_connection.h"
-#include "esp_log.h"
 
 DeviceConnection *BLEDeviceRole::create() {
   DeviceConnection *conn = _core ? _core->create() : NULL;

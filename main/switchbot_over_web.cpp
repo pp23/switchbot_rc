@@ -28,7 +28,9 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 
+#include "device/ble_device_controller.h"
 #include "portmacro.h"
+#include "shutterbutton.h"
 #include "switchbot.h"
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -49,6 +51,7 @@ static EventGroupHandle_t s_wifi_event_group;
 static const uint8_t MAX_WIFI_CONNECT_RETRIES = 3;
 static const uint8_t WIFI_CONNECT_RETRY_DELAY_SEC = 30;
 static uint8_t wifi_connect_retry_counter = 0;
+BLDeviceController gDeviceController(new SwitchBot(), new ShutterButton());
 
 static void main_task(void *param) {
   ESP_LOGI(tag, "BLE Main Task Started");
@@ -59,8 +62,8 @@ static void main_task(void *param) {
 void on_switchbot_data_update(SwitchBot *sb) { return; }
 SwitchBot::on_update_fn sb_update_fn = on_switchbot_data_update;
 static SwitchBot switchbot(sb_update_fn);
-static void sync_cb() { switchbot.on_sync(); }
-static void reset_cb(int reason) { switchbot.on_reset(reason); }
+void sync_cb() { gDeviceController.on_sync(); }
+void reset_cb(int reason) { gDeviceController.on_reset(reason); }
 
 void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
                    void *event_data) {
