@@ -6,42 +6,40 @@
 
 #include "host/ble_gap.h"
 #include "host/ble_hs_adv.h"
+#include <cstdint>
 
-// define concrete controller type to instantiate template-functions properly
-// and avoid undefined reference linker errors
-class SwitchBot;
-class ShutterButton;
-template<class... Roles>class BLDeviceController;
-using BLEDeviceControllerType = BLDeviceController<SwitchBot*,ShutterButton*>;
-
-template <typename... BLDeviceRoles>
 class BLDeviceController : public IBLEDeviceRole {
   friend class BLEDeviceRole;
 
 public:
   static const uint8_t MAX_CONNECTIONS = 4;
   static const TickType_t MAX_MTX_WAIT_TICKS = 100;
-  BLDeviceController(BLDeviceRoles... roles) : _roles(roles...) {
+  template <typename... BLDeviceRoles>
+  BLDeviceController(BLDeviceRoles... roles) : _roleCount(sizeof...(roles)) {
     _accessMtx = xSemaphoreCreateBinary();
     if (_accessMtx == NULL) {
       ESP_LOGE("core", "ERROR: Coould not create access mutex!");
       return;
     }
+    _roles = new BLEDeviceRole *[sizeof...(BLDeviceRoles)];
+    set_roles(roles...);
+    set_core(roles...);
     // mutex gets created in a "taken" state
     xSemaphoreGive(_accessMtx);
-    set_core(roles...);
   };
+
+  ~BLDeviceController() { delete[] _roles; }
 
   //! Return the BLEDevice if it matches the advertising fields.
   //! Thread safe as long as roles do not change during runtime.
   constexpr IBLEDeviceRole *
-  find_role(const struct ble_hs_adv_fields &advFields){
-  for (IBLEDeviceRole *role : _roles) {
-    if (role->find_role(advFields)) {
-      return role;
+  find_role(const struct ble_hs_adv_fields &advFields) {
+    for (uint8_t i = 0; i < _roleCount; ++i) {
+      if (_roles[i]->find_role(advFields)) {
+        return _roles[i];
+      }
     }
-  }
-  return NULL;
+    return NULL;
   }
 
   //! Returns a registered connection with the given conn_handle or NULL
@@ -102,7 +100,12 @@ private:
     a->set_core(this);
     this->set_core<B...>(b...);
   }
-  constexpr static size_t _roleCount = sizeof...(BLDeviceRoles);
+  template <typename A, int i> constexpr void set_roles(A a) { _roles[i] = a; }
+  template <typename A, typename... B, int i = 0>
+  constexpr void set_roles(A a, B... b) {
+    _roles[i] = a;
+    this->set_roles<B..., i + 1>(b...);
+  }
   //! Counts used connections (not thread safe)
   uint8_t _connection_count() const {
     uint8_t result = 0;
@@ -113,10 +116,10 @@ private:
     }
     return result;
   }
-  BLEDeviceRole *_roles[_roleCount];
+  BLEDeviceRole **_roles;
+  const uint8_t _roleCount;
   DeviceConnection _connection_pool[MAX_CONNECTIONS];
   SemaphoreHandle_t _accessMtx = NULL;
 };
-
 
 #endif // !BLE_DEVICE_CONTROLLER_H

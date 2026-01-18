@@ -13,7 +13,7 @@ static const esp_event_base_t bleEventBase = "ble_event";
 static const int32_t DATA_RX_EVENT = 1;
 static uint8_t s_current_phy;
 
-BLEDeviceControllerType *__gDeviceController = NULL;
+BLDeviceController *__gDeviceController = NULL;
 
 int on_gap_event(struct ble_gap_event *event, void *arg);
 
@@ -32,9 +32,7 @@ void on_rx_data(void *args, esp_event_base_t base, int32_t id,
 }
 
 //! Returns a registered connection with the given conn_handle or NULL
-template <typename... BLEDevices>
-DeviceConnection *
-BLDeviceController<BLEDevices...>::find(uint16_t conn_handle) {
+DeviceConnection *BLDeviceController::find(uint16_t conn_handle) {
   if (xSemaphoreTake(_accessMtx, MAX_MTX_WAIT_TICKS) != pdTRUE) {
     ESP_LOGE("core", "Could not obtain mutex!");
     return NULL;
@@ -52,9 +50,7 @@ BLDeviceController<BLEDevices...>::find(uint16_t conn_handle) {
 }
 
 //! Returns a registered connection with the given address or NULL
-template <typename... BLEDevices>
-DeviceConnection *
-BLDeviceController<BLEDevices...>::find(const ble_addr_t &addr) {
+DeviceConnection *BLDeviceController::find(const ble_addr_t &addr) {
   if (xSemaphoreTake(_accessMtx, MAX_MTX_WAIT_TICKS) != pdTRUE) {
     ESP_LOGE("core", "Could not obtain mutex!");
     return NULL;
@@ -69,9 +65,7 @@ BLDeviceController<BLEDevices...>::find(const ble_addr_t &addr) {
   return NULL;
 }
 
-template <typename... BLEDevices>
-DeviceConnection *
-BLDeviceController<BLEDevices...>::find(const char *role_name) {
+DeviceConnection *BLDeviceController::find(const char *role_name) {
   if (xSemaphoreTake(_accessMtx, MAX_MTX_WAIT_TICKS) != pdTRUE) {
     ESP_LOGE("core", "Could not obtain mutex!");
     return NULL;
@@ -91,8 +85,7 @@ BLDeviceController<BLEDevices...>::find(const char *role_name) {
 }
 
 //! Creates a new device. Returns NULL if MAX_DEVICES reached.
-template <typename... BLEDevices>
-DeviceConnection *BLDeviceController<BLEDevices...>::create() {
+DeviceConnection *BLDeviceController::create() {
   if (xSemaphoreTake(_accessMtx, MAX_MTX_WAIT_TICKS) != pdTRUE) {
     ESP_LOGE("core", "Could not obtain mutex!");
     return NULL;
@@ -438,13 +431,11 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
   return 0;
 }
 
-template <typename... Roles>
-void BLDeviceController<Roles...>::on_reset(int reason) {
+void BLDeviceController::on_reset(int reason) {
   ESP_LOGE(_tag, "Reset: %d ", reason);
 }
 
-template <typename... Roles>
-inline void BLDeviceController<Roles...>::on_sync() {
+void BLDeviceController::on_sync() {
   if (__gDeviceController != NULL) {
     ESP_LOGE(_tag,
              "FATAL: BLE DeviceConnectionice controller already set. Only one "
@@ -485,10 +476,3 @@ inline void BLDeviceController<Roles...>::on_sync() {
                      NULL);
   ESP_ERROR_CHECK(ret);
 }
-
-// instatiate template functions with concrete used template parameters to avoid
-// undefined references when linking
-template void BLEDeviceControllerType::on_sync();
-template void BLEDeviceControllerType::on_reset(int);
-template DeviceConnection *BLEDeviceControllerType::find(const char *);
-template DeviceConnection *BLEDeviceControllerType::create();
