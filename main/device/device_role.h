@@ -7,6 +7,7 @@
 
 class DeviceConnection;
 class RxEvent;
+class AdvertisingEvent;
 
 class IBLEDeviceRole {
 public:
@@ -30,6 +31,9 @@ public:
 
   //! Called on data received from a device
   virtual void on_data(const RxEvent *rxEvent) = 0;
+
+  //! Called if advertising data received from a device
+  virtual void on_advertising(const AdvertisingEvent *advEvent) = 0;
 };
 inline IBLEDeviceRole::~IBLEDeviceRole() {} // satisfy the linker
 

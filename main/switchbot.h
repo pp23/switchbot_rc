@@ -29,13 +29,15 @@
 #include <cstring>
 #include <stdio.h>
 
+#include "device/advertising_event.h"
+#include "device/ble_device_role.h"
 #include "device/device_connection.h"
 #include "device/device_role.h"
 #include "device/rx_event.h"
-#include "device/ble_device_role.h"
-
 
 class SwitchBot : public BLEDeviceRole {
+  constexpr static const char *tag = "switchbot";
+
 public:
   //! Checks the advertisement data for manufacturer ID of switchbot 0x0969
   //! (littleendian) Woan Technology
@@ -80,11 +82,33 @@ protected:
   void update();
 
   void on_data(const RxEvent *rxEvent) {
-    ESP_LOGE("switchbot", "on_data: Not implemented");
+    ESP_LOGE(tag, "on_data: Not implemented");
+  }
+
+  void on_advertising(const AdvertisingEvent *advEvent) {
+    ESP_LOGI(tag, "Advertising data update");
+    auto advFields = advEvent->get_advertising_fields();
+    if (advFields.mfg_data_len < 6) {
+      ESP_LOGE(tag, "mfg data too small, 6 bytes required");
+      return;
+    }
+    // battery stored in high byte
+    ESP_LOGI(tag, "Battery byte: %02x", advFields.mfg_data[5]);
+    if (_calc_battery_percentage(advFields.mfg_data[5]) == _batteryPercentage) {
+      // no change, no update() call required
+      return;
+    }
+    _batteryPercentage = _calc_battery_percentage(advFields.mfg_data[5]);
+    ESP_LOGI(tag, "Battery: %d%", _batteryPercentage);
+    this->update();
   }
 
 private:
+  constexpr inline uint8_t _calc_battery_percentage(uint8_t rawBatByte) const {
+    return (uint8_t)(rawBatByte & 0x7f) * 10;
+  }
   on_update_fn _update;
+  uint8_t _batteryPercentage = 0xff;
 };
 
 #endif

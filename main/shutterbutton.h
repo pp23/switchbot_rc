@@ -1,6 +1,7 @@
 #ifndef SHUTTER_BUTTON_H
 #define SHUTTER_BUTTON_H
 
+#include "device/advertising_event.h"
 #include "device/ble_device_role.h"
 #include "device/rx_event.h"
 #include "switchbot.h"
@@ -33,6 +34,10 @@ protected:
         rxEvent->buf[1] == 0x00) { // button released; ignore
       return;
     }
+  }
+
+  void on_advertising(const AdvertisingEvent *advEvent) {
+    ESP_LOGE("button", "Not implemented yet");
   }
 };
 #endif

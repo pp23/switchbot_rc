@@ -4,8 +4,13 @@
 #include "ble_device_role.h"
 #include "device_connection.h"
 
+#include "esp_err.h"
+#include "esp_event.h"
+#include "esp_event_base.h"
+#include "freertos/idf_additions.h"
 #include "host/ble_gap.h"
 #include "host/ble_hs_adv.h"
+#include "portmacro.h"
 #include <cstdint>
 
 class BLDeviceController : public IBLEDeviceRole {
@@ -24,11 +29,28 @@ public:
     _roles = new BLEDeviceRole *[sizeof...(BLDeviceRoles)];
     set_roles(roles...);
     set_core(roles...);
+    // Create a user event loop to not get blocked by vTaskDelays on the default
+    // event loop Uses half the max prio as we do probably not need high prio
+    // but also no idle prio to get ble-events and reactions in reasonable time
+    UBaseType_t evtLoopPrio =
+        MAX((configMAX_PRIORITIES - 1) / 2, tskIDLE_PRIORITY + 1);
+    ESP_LOGI("core", "Event loop prio: %d", evtLoopPrio);
+    esp_event_loop_args_t loop_args = {.queue_size = 4,
+                                       .task_name = "ble_evt_loop",
+                                       .task_priority = evtLoopPrio,
+                                       .task_stack_size = 3072,
+                                       .task_core_id = tskNO_AFFINITY};
+    ESP_ERROR_CHECK(esp_event_loop_create(&loop_args, &this->_eventLoop));
     // mutex gets created in a "taken" state
     xSemaphoreGive(_accessMtx);
   };
 
-  ~BLDeviceController() { delete[] _roles; }
+  ~BLDeviceController() {
+    delete[] _roles;
+    esp_event_loop_delete(this->_eventLoop);
+  }
+
+  esp_event_loop_handle_t event_loop() const { return _eventLoop; }
 
   //! Return the BLEDevice if it matches the advertising fields.
   //! Thread safe as long as roles do not change during runtime.
@@ -93,6 +115,7 @@ protected:
 
   bool can_connect(const DeviceConnection *conn) const { return true; }
   void on_data(const RxEvent *) {}
+  void on_advertising(const AdvertisingEvent *) {}
 
 private:
   template <typename A> constexpr void set_core(A a) { a->set_core(this); }
@@ -120,6 +143,7 @@ private:
   const uint8_t _roleCount;
   DeviceConnection _connection_pool[MAX_CONNECTIONS];
   SemaphoreHandle_t _accessMtx = NULL;
+  esp_event_loop_handle_t _eventLoop = NULL;
 };
 
 #endif // !BLE_DEVICE_CONTROLLER_H

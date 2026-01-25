@@ -1,16 +1,21 @@
 #include "ble_device_controller.h"
 #include "device_connection.h"
+#include "esp_err.h"
 #include "esp_event.h"
 #include "esp_event_base.h"
 #include "esp_log.h"
 #include "host/ble_gatt.h"
 #include "host/util/util.h"
 
+#include "advertising_event.h"
 #include "rx_event.h"
 
 static const char *_tag = "ble";
 static const esp_event_base_t bleEventBase = "ble_event";
+namespace EVENT_TYPE {
 static const int32_t DATA_RX_EVENT = 1;
+static const int32_t ADVERTISING_EVENT = 2;
+} // namespace EVENT_TYPE
 static uint8_t s_current_phy;
 
 BLDeviceController *__gDeviceController = NULL;
@@ -29,6 +34,19 @@ void on_rx_data(void *args, esp_event_base_t base, int32_t id,
   }
   ESP_LOGI(_tag, "Calling role %s", role->role_name());
   role->on_data(&event);
+}
+
+void on_advertising_event(void *args, esp_event_base_t base, int32_t id,
+                          void *event_data) {
+  ESP_LOGI(_tag, "AdvertisingEvent scheduled");
+  AdvertisingEvent event = *(AdvertisingEvent *)event_data;
+  IBLEDeviceRole *role(event.conn->role());
+  if (!role) {
+    ESP_LOGE(_tag, "ERROR: No role set for connection!");
+    return;
+  }
+  ESP_LOGI(_tag, "Calling role %s", role->role_name());
+  role->on_advertising(&event);
 }
 
 //! Returns a registered connection with the given conn_handle or NULL
@@ -322,11 +340,15 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
                  event->ext_disc.addr.val[5], conn->role()->role_name());
       }
       ESP_LOGI(_tag, "Conn pointer address: %p", conn);
-      if (conn->set_discovery_data(event->ext_disc.data,
-                                   event->ext_disc.length_data) == ESP_OK) {
-        // notify role about discovery data update
-        // TODO: schedule event in event loop
-      }
+      // if (conn->set_discovery_data(event->ext_disc.data,
+      //                              event->ext_disc.length_data) == ESP_OK) {
+      // notify role about discovery data update
+      // schedule event in event loop
+      AdvertisingEvent advEvent(advFields, conn);
+      esp_event_post_to(__gDeviceController->event_loop(), bleEventBase,
+                        EVENT_TYPE::ADVERTISING_EVENT, (const void *)&advEvent,
+                        sizeof(AdvertisingEvent), 1000);
+      // }
       // connect only if allowed by role
       // e.g. connect always or only on specific conditions
       if (device->can_connect(conn)) {
@@ -421,8 +443,9 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
     RxEvent evt = RxEvent(event, conn);
     ESP_LOGI(_tag, "RxEvent evt: size: %d", sizeof(RxEvent));
     // notify role about data
-    esp_event_post(bleEventBase, DATA_RX_EVENT, (const void *)&evt,
-                   sizeof(RxEvent), 1000);
+    esp_event_post_to(__gDeviceController->event_loop(), bleEventBase,
+                      EVENT_TYPE::DATA_RX_EVENT, (const void *)&evt,
+                      sizeof(RxEvent), 1000);
     break;
   }
   default:
@@ -449,9 +472,12 @@ void BLDeviceController::on_sync() {
 
   ESP_LOGI(_tag, "Syncing.");
 
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
-  esp_event_handler_instance_register(bleEventBase, DATA_RX_EVENT, on_rx_data,
-                                      NULL, NULL);
+  esp_event_handler_instance_register_with(this->_eventLoop, bleEventBase,
+                                           EVENT_TYPE::DATA_RX_EVENT,
+                                           on_rx_data, NULL, NULL);
+  esp_event_handler_instance_register_with(this->_eventLoop, bleEventBase,
+                                           EVENT_TYPE::ADVERTISING_EVENT,
+                                           on_advertising_event, NULL, NULL);
   // ensure proper identity address
   ret = ble_hs_util_ensure_addr(0);
   ESP_ERROR_CHECK(ret);

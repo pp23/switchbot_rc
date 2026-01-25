@@ -16,16 +16,9 @@
 #include <cstdint>
 #include <sys/types.h>
 
-
 esp_err_t connect(const ble_addr_t &addr, DeviceConnection *dc);
 
 struct ble_npl_event schedule_event;
-
-
-
-static const char *tag = "switchbot_controller";
-
-
 
 SwitchBot::SwitchBot(on_update_fn update_fn) : _update(update_fn) {}
 
@@ -66,4 +59,3 @@ void SwitchBot::send_command(DeviceConnection *conn, Command cmd) {
   ble_gattc_write_no_rsp(conn->conn_handle(), chrValHandle,
                          ble_hs_mbuf_from_flat(cmdData, 3));
 }
-

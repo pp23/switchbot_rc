@@ -51,7 +51,14 @@ static EventGroupHandle_t s_wifi_event_group;
 static const uint8_t MAX_WIFI_CONNECT_RETRIES = 3;
 static const uint8_t WIFI_CONNECT_RETRY_DELAY_SEC = 30;
 static uint8_t wifi_connect_retry_counter = 0;
-BLDeviceController gDeviceController(new SwitchBot(), new ShutterButton());
+static TaskHandle_t wifi_task_handle = NULL;
+void on_switchbot_data_update(SwitchBot *sb) {
+  ESP_LOGI(tag, "SwitchBot update: %s", sb->role_name());
+  return;
+}
+SwitchBot::on_update_fn sb_update_fn = on_switchbot_data_update;
+BLDeviceController gDeviceController(new SwitchBot(sb_update_fn),
+                                     new ShutterButton());
 
 static void main_task(void *param) {
   ESP_LOGI(tag, "BLE Main Task Started");
@@ -59,11 +66,27 @@ static void main_task(void *param) {
   nimble_port_freertos_deinit();
 }
 
-void on_switchbot_data_update(SwitchBot *sb) { return; }
-SwitchBot::on_update_fn sb_update_fn = on_switchbot_data_update;
-static SwitchBot switchbot(sb_update_fn);
 void sync_cb() { gDeviceController.on_sync(); }
 void reset_cb(int reason) { gDeviceController.on_reset(reason); }
+
+void wifi_connect_task(void *pvParameters) {
+
+  /* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or
+   * connection failed for the maximum number of re-tries (WIFI_FAIL_BIT). The
+   * bits are set by event_handler() (see above) */
+  EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+                                         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                         pdFALSE, pdFALSE, portMAX_DELAY);
+  if (bits & WIFI_CONNECTED_BIT) {
+    ESP_LOGI(tag, "Connected to Wifi SSID: %s", WIFI_SSID);
+  } else if (bits & WIFI_FAIL_BIT) {
+    ESP_LOGE(tag, "Failed to connect to SSID: %s", WIFI_SSID);
+  } else {
+    ESP_LOGE(tag, "Unexpected event: %02x", bits);
+  }
+  vTaskDelete(wifi_task_handle);
+  wifi_task_handle = NULL;
+}
 
 void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
                    void *event_data) {
@@ -89,11 +112,21 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
     ESP_LOGI(tag, "Wifi STA connected");
+    wifi_connect_retry_counter = 0;
+    // TODO: Trigger NTP time retrieval
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_HOME_CHANNEL_CHANGE) {
     ESP_LOGI(tag, "Wifi home channel change");
+  } else if (event_base == WIFI_EVENT &&
+             event_id == WIFI_EVENT_STA_BEACON_TIMEOUT) {
+    ESP_LOGI(tag, "Beacon timeout. Reconnecting...");
+    vTaskDelay(pdMS_TO_TICKS(WIFI_CONNECT_RETRY_DELAY_SEC * 1000));
+    esp_wifi_connect();
   } else {
-    ESP_LOGE(tag, "Unknown event: %s id: %d", event_base, event_id);
+    ESP_LOGE(tag, "Unknown event: %s id: %d. Trying reconnect", event_base,
+             event_id);
+    vTaskDelay(pdMS_TO_TICKS(WIFI_CONNECT_RETRY_DELAY_SEC * 1000));
+    esp_wifi_connect();
     return;
   }
 }
@@ -125,19 +158,9 @@ void wifi_init_sta() {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
   ESP_LOGI(tag, "wifi_init_sta finished.");
-  /* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or
-   * connection failed for the maximum number of re-tries (WIFI_FAIL_BIT). The
-   * bits are set by event_handler() (see above) */
-  EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                         pdFALSE, pdFALSE, portMAX_DELAY);
-  if (bits & WIFI_CONNECTED_BIT) {
-    ESP_LOGI(tag, "Connected to Wifi SSID: %s", WIFI_SSID);
-  } else if (bits & WIFI_FAIL_BIT) {
-    ESP_LOGE(tag, "Failed to connect to SSID: %s", WIFI_SSID);
-  } else {
-    ESP_LOGE(tag, "Unexpected event: %02x", bits);
-  }
+  // TODO: Task which waits for wifi connection not needed
+  xTaskCreate(wifi_connect_task, "WIFI_CONNECT", 0, NULL, tskIDLE_PRIORITY,
+              &wifi_task_handle);
 }
 
 esp_err_t root_get_handler(httpd_req_t *req) {
@@ -176,25 +199,25 @@ extern "C" void app_main(void) {
   ble_hs_cfg.sync_cb = sync_cb;
   ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
   // init wifi
-  // wifi_init_sta();
-  //
-  // // initialize http server
-  // rest_server_context_t *restContext =
-  //     (rest_server_context_t *)calloc(1, sizeof(rest_server_context_t));
-  // httpd_handle_t server = NULL;
-  // httpd_config_t serverConfig = HTTPD_DEFAULT_CONFIG();
-  // serverConfig.uri_match_fn = httpd_uri_match_wildcard;
-  // ESP_LOGI(tag, "Starting HTTP Server");
-  // if (esp_err_t err = httpd_start(&server, &serverConfig) != ESP_OK) {
-  //   ESP_LOGE(tag, "Start server failed: %s", err);
-  // }
-  // httpd_uri_t root_get_uri = {
-  //     .uri = "/",
-  //     .method = HTTP_GET,
-  //     .handler = root_get_handler,
-  //     .user_ctx = restContext,
-  // };
-  // httpd_register_uri_handler(server, &root_get_uri);
+  wifi_init_sta();
+
+  // initialize http server
+  rest_server_context_t *restContext =
+      (rest_server_context_t *)calloc(1, sizeof(rest_server_context_t));
+  httpd_handle_t server = NULL;
+  httpd_config_t serverConfig = HTTPD_DEFAULT_CONFIG();
+  serverConfig.uri_match_fn = httpd_uri_match_wildcard;
+  ESP_LOGI(tag, "Starting HTTP Server");
+  if (esp_err_t err = httpd_start(&server, &serverConfig) != ESP_OK) {
+    ESP_LOGE(tag, "Start server failed: %s", err);
+  }
+  httpd_uri_t root_get_uri = {
+      .uri = "/",
+      .method = HTTP_GET,
+      .handler = root_get_handler,
+      .user_ctx = restContext,
+  };
+  httpd_register_uri_handler(server, &root_get_uri);
 
   nimble_port_freertos_init(main_task);
 
