@@ -1,5 +1,6 @@
 #include "switchbot_net.h"
 
+#include "esp_err.h"
 #include "esp_event.h"
 #include "esp_event_base.h"
 #include "esp_http_server.h"
@@ -54,25 +55,6 @@ void init_http_server() {
   httpd_register_uri_handler(server, &root_get_uri);
 }
 
-void wifi_connect_task(void *pvParameters) {
-
-  /* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or
-   * connection failed for the maximum number of re-tries (WIFI_FAIL_BIT). The
-   * bits are set by event_handler() (see above) */
-  EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                         pdFALSE, pdFALSE, portMAX_DELAY);
-  if (bits & WIFI_CONNECTED_BIT) {
-    ESP_LOGI(tag, "Connected to Wifi SSID: %s", WIFI_SSID);
-  } else if (bits & WIFI_FAIL_BIT) {
-    ESP_LOGE(tag, "Failed to connect to SSID: %s", WIFI_SSID);
-  } else {
-    ESP_LOGE(tag, "Unexpected event: %02x", bits);
-  }
-  vTaskDelete(wifi_task_handle);
-  wifi_task_handle = NULL;
-}
-
 void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
                    void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
@@ -93,12 +75,26 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
     }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+
     ESP_LOGI(tag, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
-    xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    // wifi considered as fully connected after IP received
+    // set initial DNS fallback if DHCP DNS not working
+    esp_netif_dns_info_t dnsInfo;
+    // set google dns
+    esp_netif_set_ip4_addr(&dnsInfo.ip.u_addr.ip4, 8, 8, 8, 8);
+    dnsInfo.ip.type = ESP_IPADDR_TYPE_V4;
+    if (esp_err_t err =
+            esp_netif_set_dns_info(event->esp_netif, ESP_NETIF_DNS_FALLBACK,
+                                   &dnsInfo) != ESP_OK) {
+      ESP_LOGE(tag, "could not set fallback DNS: %d", err);
+    }
+    // TODO: rename as connected does not mean "IP from DHCP received"
+    if (on_wifi_connected_fn != NULL) {
+      on_wifi_connected_fn(event->esp_netif);
+    }
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
     ESP_LOGI(tag, "Wifi STA connected");
     wifi_connect_retry_counter = 0;
-    // TODO: Trigger NTP time retrieval
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_HOME_CHANNEL_CHANGE) {
     ESP_LOGI(tag, "Wifi home channel change");
@@ -143,7 +139,4 @@ void wifi_init_sta() {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
   ESP_LOGI(tag, "wifi_init_sta finished.");
-  // TODO: Task which waits for wifi connection not needed
-  xTaskCreate(wifi_connect_task, "WIFI_CONNECT", 0, NULL, tskIDLE_PRIORITY,
-              &wifi_task_handle);
 }

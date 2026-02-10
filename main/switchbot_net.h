@@ -1,7 +1,10 @@
 #ifndef _SWITCHBOT_NET_H_
 #define _SWITCHBOT_NET_H_
 
+#include <cstddef>
 #include <stdint.h>
+
+#include "esp_netif.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
@@ -16,10 +19,14 @@ typedef struct rest_server_context {
   char scratch[SCRATCH_BUFSIZE];
 } rest_server_context_t;
 
+typedef void (*on_connected_fn)(esp_netif_t *netif);
+
 static const uint8_t MAX_WIFI_CONNECT_RETRIES = 3;
 static const uint8_t WIFI_CONNECT_RETRY_DELAY_SEC = 30;
 
 void wifi_init_sta();
 void init_http_server();
+
+inline on_connected_fn on_wifi_connected_fn = NULL;
 
 #endif
