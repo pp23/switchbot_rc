@@ -4,4 +4,12 @@ idf_component_register(SRCS
                           "switchbot.cpp"
                           "switchbot_net.cpp"
                           "switchbot_over_web.cpp"
-                    INCLUDE_DIRS ".")
+                          "lcd/st7789.cpp"
+                          "lcd/Vernon_ST7789T/Vernon_ST7789T.cpp"
+                          "lcd/LVGL_Driver/LVGL_Driver.cpp"
+                    INCLUDE_DIRS
+                          "."
+                          "lcd/"
+                          "lcd/Vernon_ST7789T/"
+                          "lcd/LVGL_Driver/"
+                        )

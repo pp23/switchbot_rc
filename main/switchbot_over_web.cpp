@@ -1,4 +1,5 @@
 // #include "bt/host/nimble/esp-hci/include/esp_nimble_hci.h"
+#include "LVGL_Driver.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
@@ -22,6 +23,7 @@
 #include <sys/types.h>
 
 #include "device/ble_device_controller.h"
+#include "lcd/st7789.h"
 #include "portmacro.h"
 #include "shutterbutton.h"
 #include "switchbot.h"
@@ -112,6 +114,11 @@ extern "C" void app_main(void) {
   wifi_init_sta();
   init_http_server();
   on_wifi_connected_fn = on_wifi_connected;
+
+  // init LCD
+  LCD_Init();
+  BK_Light(100);
+  // LVGL_Init();
 
   nimble_port_freertos_init(main_task);
 
