@@ -1,35 +1,126 @@
-#include "st7789.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "esp_err.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_st7789.h"
 #include "esp_lcd_types.h"
-#include "hal/lcd_types.h"
+#include "esp_log.h"
 #include "hal/spi_types.h"
-#include <cstddef>
 #include <cstdint>
 #include <cstring>
+
+#include "font8x8_basic.h"
+#include "st7789.h"
 
 static const char *TAG_LCD = "WS_LCD";
 #define LCD_SPI_HOST_ID SPI2_HOST
 
 esp_lcd_panel_handle_t panel_handle = NULL;
 
-static const size_t size =
-    EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * sizeof(uint16_t);
+static size_t W = EXAMPLE_LCD_H_RES;
+static size_t H = EXAMPLE_LCD_V_RES;
+static const uint8_t scale = 8;
+static const size_t dimensions = W * H;
+static const size_t size = dimensions * sizeof(uint16_t);
+static uint16_t *img = (uint16_t *)heap_caps_malloc(size, MALLOC_CAP_DMA);
+
+esp_err_t flush() {
+  return esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, W, H, img);
+}
+
+enum ROTATION {
+  PORTRAIT = 0,
+  LANDSCAPE = 90,
+  // not implemented:
+  // PORTRAIT_UPSIDEDOWN = 180,
+  // LANDSCAPE_270 = 270
+};
+
+esp_err_t rotate(ROTATION rot) {
+  switch (rot) {
+  case PORTRAIT: {
+    if (esp_err_t err = esp_lcd_panel_swap_xy(panel_handle, false) != ESP_OK) {
+      return err;
+    }
+    if (esp_err_t err =
+            esp_lcd_panel_mirror(panel_handle, false, false) != ESP_OK) {
+      return err;
+    }
+    W = EXAMPLE_LCD_H_RES;
+    H = EXAMPLE_LCD_V_RES;
+    // the gap is LCD panel specific, even panels with the same driver IC, can
+    // have different gap value
+    return esp_lcd_panel_set_gap(panel_handle, OFFSET_X, OFFSET_Y);
+  } break;
+  case LANDSCAPE: {
+    if (esp_err_t err = esp_lcd_panel_swap_xy(panel_handle, true) != ESP_OK) {
+      return err;
+    }
+    if (esp_err_t err =
+            esp_lcd_panel_mirror(panel_handle, true, false) != ESP_OK) {
+      return err;
+    }
+    W = EXAMPLE_LCD_V_RES;
+    H = EXAMPLE_LCD_H_RES;
+    // the gap is LCD panel specific, even panels with the same driver IC, can
+    // have different gap value
+    // -2 or less required to avoid warping of characters (why???)
+    return esp_lcd_panel_set_gap(panel_handle, OFFSET_Y - 2, OFFSET_X);
+  } break;
+  }
+  return ESP_FAIL; // default on unknown ROTATION
+}
+
+void clear_display(uint16_t color) { memset(img, color, size); }
+
+void draw_glyph(const uint8_t *glyph, uint16_t x0, uint16_t y0, uint8_t scale,
+                uint16_t fg, uint16_t bg) {
+  for (uint16_t y = 0; y < 8; ++y) {
+    const uint8_t row = glyph[y];
+    for (uint8_t sy = 0; sy < scale; ++sy) {
+      const uint16_t Y = y0 + y * scale + sy;
+      if (Y >= H) {
+        continue;
+      }
+      for (uint16_t x = 0; x < 8; ++x) {
+        const uint16_t color = (row & (1 << x)) ? fg : bg;
+        for (uint8_t sx = 0; sx < scale; ++sx) {
+          const uint16_t X = x0 + x * scale + sx;
+          if (X < W) {
+            img[Y * W + X] = color;
+          }
+        }
+      }
+    }
+  }
+}
+
+void draw_char(char c, uint16_t x0, uint16_t y0, uint8_t scale, uint16_t fg,
+               uint16_t bg) {
+  const uint8_t *glyph = font8x8_basic[(uint8_t)c];
+  draw_glyph(glyph, x0, y0, scale, fg, bg);
+}
+
+esp_err_t draw_string(const char *s, uint8_t len, uint16_t x0, uint16_t y0,
+                      uint8_t scale, uint16_t fg, uint16_t bg) {
+  // will the string fit on the screen?
+  if (x0 + len * 8 * scale >= W) {
+    return ESP_FAIL;
+  }
+  if (y0 + 8 * scale >= H) {
+    return ESP_FAIL;
+  }
+  for (uint8_t i = 0; i < len; ++i) {
+    draw_char(s[i], x0 + 8 * scale * i, y0, scale, fg, bg);
+  }
+  return ESP_OK;
+}
 
 void draw_example_label() {
-  uint8_t *img = (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_DMA);
-
-  esp_lcd_panel_reset(panel_handle);
-  esp_lcd_panel_init(panel_handle);
-  esp_lcd_panel_invert_color(panel_handle, true);
-  // the gap is LCD panel specific, even panels with the same driver IC, can
-  // have different gap value
-  esp_lcd_panel_set_gap(panel_handle, 0, 20);
-  // turn on display
-  esp_lcd_panel_disp_on_off(panel_handle, true);
-  memset(img, 0x3f, size);
-  ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(
-      panel_handle, 0, 0, EXAMPLE_LCD_H_RES, EXAMPLE_LCD_V_RES, img));
-  free(img);
+  clear_display(0x0033);
+  draw_string("ABCDE", 5, 10, 0, scale, 0xffff, 0x0);
+  draw_string("ABCDE", 5, 10, 8 * scale, scale, 0x33ff, 0x0);
+  ESP_ERROR_CHECK(flush());
 }
 
 bool on_color_trans_done(esp_lcd_panel_handle_t) { return true; }
@@ -43,8 +134,7 @@ void LCD_Init(void) {
   buscfg.miso_io_num = -1;
   buscfg.quadwp_io_num = -1;
   buscfg.quadhd_io_num = -1;
-  buscfg.max_transfer_sz =
-      EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * sizeof(uint16_t);
+  buscfg.max_transfer_sz = W * H * sizeof(uint16_t);
   ESP_ERROR_CHECK(
       spi_bus_initialize(LCD_SPI_HOST_ID, &buscfg, SPI_DMA_CH_AUTO));
 
@@ -71,29 +161,16 @@ void LCD_Init(void) {
   // Create LCD panel handle for ST7789, with the SPI IO device handle
   ESP_ERROR_CHECK(
       esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle));
-
-  // esp_lcd_panel_dev_st7789t_config_t panel_config;
-  // panel_config.reset_gpio_num = EXAMPLE_PIN_NUM_LCD_RST;
-  // panel_config.rgb_endian = LCD_RGB_ELEMENT_ORDER_RGB;
-  // panel_config.bits_per_pixel = 16;
-  // ESP_LOGI(TAG_LCD, "Install ST7789T panel driver");
-  // ESP_ERROR_CHECK(
-  //     esp_lcd_new_panel_st7789t(io_handle, &panel_config, &panel_handle));
-
-  // ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
-  // ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
-  // ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
-  //
-  // // user can flush pre-defined pattern to the screen before we turn on the
-  // // screen or backlight
-  // ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
-
-  // ESP_LOGI(TAG_LCD, "Turn on LCD backlight");
-  //  gpio_set_level(EXAMPLE_PIN_NUM_BK_LIGHT, EXAMPLE_LCD_BK_LIGHT_ON_LEVEL);
-
   BK_Init(); // Initialize the backlight
+  esp_lcd_panel_reset(panel_handle);
+  esp_lcd_panel_init(panel_handle);
+  esp_lcd_panel_invert_color(panel_handle, true);
+  ESP_ERROR_CHECK(rotate(LANDSCAPE));
+  // esp_lcd_panel_set_gap(panel_handle, 50, 30);
+  // turn on display
+  esp_lcd_panel_disp_on_off(panel_handle, true);
+
   draw_example_label();
-  //   BK_Light(75);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

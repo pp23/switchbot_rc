@@ -1,5 +1,4 @@
 // #include "bt/host/nimble/esp-hci/include/esp_nimble_hci.h"
-#include "LVGL_Driver.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
@@ -117,8 +116,7 @@ extern "C" void app_main(void) {
 
   // init LCD
   LCD_Init();
-  BK_Light(1);
-  // LVGL_Init();
+  BK_Light(100);
 
   nimble_port_freertos_init(main_task);
 
