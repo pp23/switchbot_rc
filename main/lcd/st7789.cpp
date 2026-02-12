@@ -100,43 +100,37 @@ void LCD_Init(void) {
 // Backlight program
 static ledc_channel_config_t ledc_channel;
 void BK_Init(void) {
-  ESP_LOGI(TAG_LCD, "Turn off LCD backlight");
   gpio_config_t bk_gpio_config;
   bk_gpio_config.mode = GPIO_MODE_OUTPUT;
   bk_gpio_config.pin_bit_mask = 1ULL << EXAMPLE_PIN_NUM_BK_LIGHT;
-  gpio_set_direction(EXAMPLE_PIN_NUM_BK_LIGHT, GPIO_MODE_OUTPUT);
   ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
 
-  // 配置LEDC
-  // ledc_timer_config_t ledc_timer;
-  // ledc_timer.duty_resolution = LEDC_TIMER_13_BIT;
-  // ledc_timer.freq_hz = 5000;
-  // ledc_timer.speed_mode = LEDC_LS_MODE;
-  // ledc_timer.timer_num = LEDC_HS_TIMER;
-  // ledc_timer.clk_cfg = LEDC_AUTO_CLK;
-  // ledc_timer_config(&ledc_timer);
-  //
-  // ledc_channel.channel = LEDC_HS_CH0_CHANNEL;
-  // ledc_channel.duty = 0;
-  // ledc_channel.gpio_num = EXAMPLE_PIN_NUM_BK_LIGHT;
-  // ledc_channel.speed_mode = LEDC_LS_MODE;
-  // ledc_channel.timer_sel = LEDC_HS_TIMER;
-  // ledc_channel_config(&ledc_channel);
-  // ledc_fade_func_install(0);
+  // LEDC
+  ledc_timer_config_t ledc_timer;
+  ledc_timer.duty_resolution = LEDC_TIMER_13_BIT;
+  ledc_timer.freq_hz = 5000;
+  ledc_timer.speed_mode = LEDC_LS_MODE;
+  ledc_timer.timer_num = LEDC_HS_TIMER;
+  ledc_timer.clk_cfg = LEDC_AUTO_CLK;
+  ledc_timer_config(&ledc_timer);
+
+  ledc_channel.channel = LEDC_HS_CH0_CHANNEL;
+  ledc_channel.duty = 0;
+  ledc_channel.gpio_num = EXAMPLE_PIN_NUM_BK_LIGHT;
+  ledc_channel.speed_mode = LEDC_LS_MODE;
+  ledc_channel.timer_sel = LEDC_HS_TIMER;
+  ledc_channel_config(&ledc_channel);
+  ledc_fade_func_install(0);
 }
 void BK_Light(uint8_t Light) {
-  if (Light > 0) {
-    gpio_set_level(EXAMPLE_PIN_NUM_BK_LIGHT, 1);
-  } else {
-    gpio_set_level(EXAMPLE_PIN_NUM_BK_LIGHT, 0);
+  if (Light > 100) {
+    Light = 100;
   }
-  // if (Light > 100)
-  //   Light = 100;
-  // uint16_t Duty = LEDC_MAX_Duty - (81 * (100 - Light));
-  // if (Light == 0)
-  //   Duty = 0;
-  // // 设置PWM占空比
-  // ledc_set_duty(ledc_channel.speed_mode, ledc_channel.channel, Duty);
-  // ledc_update_duty(ledc_channel.speed_mode, ledc_channel.channel);
+  uint16_t Duty = LEDC_MAX_Duty - (81 * (100 - Light));
+  if (Light == 0) {
+    Duty = 0;
+  }
+  ledc_set_duty(ledc_channel.speed_mode, ledc_channel.channel, Duty);
+  ledc_update_duty(ledc_channel.speed_mode, ledc_channel.channel);
 }
 // end Backlight program

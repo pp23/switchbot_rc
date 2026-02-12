@@ -117,7 +117,7 @@ extern "C" void app_main(void) {
 
   // init LCD
   LCD_Init();
-  BK_Light(100);
+  BK_Light(1);
   // LVGL_Init();
 
   nimble_port_freertos_init(main_task);
