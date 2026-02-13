@@ -1,5 +1,4 @@
 #include "driver/gpio.h"
-#include "driver/ledc.h"
 #include "esp_err.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_st7789.h"
@@ -15,28 +14,11 @@
 static const char *TAG_LCD = "WS_LCD";
 #define LCD_SPI_HOST_ID SPI2_HOST
 
-esp_lcd_panel_handle_t panel_handle = NULL;
-
-static size_t W = EXAMPLE_LCD_H_RES;
-static size_t H = EXAMPLE_LCD_V_RES;
-static const uint8_t scale = 8;
-static const size_t dimensions = W * H;
-static const size_t size = dimensions * sizeof(uint16_t);
-static uint16_t *img = (uint16_t *)heap_caps_malloc(size, MALLOC_CAP_DMA);
-
-esp_err_t flush() {
+esp_err_t Display::flush() {
   return esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, W, H, img);
 }
 
-enum ROTATION {
-  PORTRAIT = 0,
-  LANDSCAPE = 90,
-  // not implemented:
-  // PORTRAIT_UPSIDEDOWN = 180,
-  // LANDSCAPE_270 = 270
-};
-
-esp_err_t rotate(ROTATION rot) {
+esp_err_t Display::rotate(ROTATION rot) {
   switch (rot) {
   case PORTRAIT: {
     if (esp_err_t err = esp_lcd_panel_swap_xy(panel_handle, false) != ESP_OK) {
@@ -71,10 +53,10 @@ esp_err_t rotate(ROTATION rot) {
   return ESP_FAIL; // default on unknown ROTATION
 }
 
-void clear_display(uint16_t color) { memset(img, color, size); }
+void Display::clear(uint16_t color) { memset(img, color, size); }
 
-void draw_glyph(const uint8_t *glyph, uint16_t x0, uint16_t y0, uint8_t scale,
-                uint16_t fg, uint16_t bg) {
+void Display::drawGlyph(const uint8_t *glyph, uint16_t x0, uint16_t y0,
+                        uint8_t scale, uint16_t fg, uint16_t bg) {
   for (uint16_t y = 0; y < 8; ++y) {
     const uint8_t row = glyph[y];
     for (uint8_t sy = 0; sy < scale; ++sy) {
@@ -95,14 +77,15 @@ void draw_glyph(const uint8_t *glyph, uint16_t x0, uint16_t y0, uint8_t scale,
   }
 }
 
-void draw_char(char c, uint16_t x0, uint16_t y0, uint8_t scale, uint16_t fg,
-               uint16_t bg) {
+void Display::drawChar(char c, uint16_t x0, uint16_t y0, uint8_t scale,
+                       uint16_t fg, uint16_t bg) {
   const uint8_t *glyph = font8x8_basic[(uint8_t)c];
-  draw_glyph(glyph, x0, y0, scale, fg, bg);
+  drawGlyph(glyph, x0, y0, scale, fg, bg);
 }
 
-esp_err_t draw_string(const char *s, uint8_t len, uint16_t x0, uint16_t y0,
-                      uint8_t scale, uint16_t fg, uint16_t bg) {
+esp_err_t Display::drawString(const char *s, uint8_t len, uint16_t x0,
+                              uint16_t y0, uint8_t scale, uint16_t fg,
+                              uint16_t bg) {
   // will the string fit on the screen?
   if (x0 + len * 8 * scale >= W) {
     return ESP_FAIL;
@@ -111,21 +94,15 @@ esp_err_t draw_string(const char *s, uint8_t len, uint16_t x0, uint16_t y0,
     return ESP_FAIL;
   }
   for (uint8_t i = 0; i < len; ++i) {
-    draw_char(s[i], x0 + 8 * scale * i, y0, scale, fg, bg);
+    drawChar(s[i], x0 + 8 * scale * i, y0, scale, fg, bg);
   }
   return ESP_OK;
 }
 
-void draw_example_label() {
-  clear_display(0x0033);
-  draw_string("ABCDE", 5, 10, 0, scale, 0xffff, 0x0);
-  draw_string("ABCDE", 5, 10, 8 * scale, scale, 0x33ff, 0x0);
-  ESP_ERROR_CHECK(flush());
-}
-
-bool on_color_trans_done(esp_lcd_panel_handle_t) { return true; }
-
-void LCD_Init(void) {
+Display::Display(ROTATION rot, uint8_t backlight)
+    : W(EXAMPLE_LCD_H_RES), H(EXAMPLE_LCD_V_RES), dimensions(W * H),
+      size(dimensions * sizeof(uint16_t)) {
+  ESP_LOGI(TAG_LCD, "Size: %d", size);
   ESP_LOGI(TAG_LCD, "Initialize SPI bus");
   spi_bus_config_t buscfg;
   memset(&buscfg, 0, sizeof(spi_bus_config_t));
@@ -161,22 +138,36 @@ void LCD_Init(void) {
   // Create LCD panel handle for ST7789, with the SPI IO device handle
   ESP_ERROR_CHECK(
       esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle));
-  BK_Init(); // Initialize the backlight
-  esp_lcd_panel_reset(panel_handle);
-  esp_lcd_panel_init(panel_handle);
-  esp_lcd_panel_invert_color(panel_handle, true);
-  ESP_ERROR_CHECK(rotate(LANDSCAPE));
+  this->initBacklight(); // Initialize the backlight
+  this->setBacklight(backlight);
+  ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+  ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+  ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
+  ESP_ERROR_CHECK(rotate(rot));
   // esp_lcd_panel_set_gap(panel_handle, 50, 30);
   // turn on display
-  esp_lcd_panel_disp_on_off(panel_handle, true);
-
-  draw_example_label();
+  ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+  ESP_LOGI(TAG_LCD, "LCD initialized");
+  ESP_LOGI(TAG_LCD, "Init framebuffers...");
+  // framebuffers need to get initialized after drivers!
+  img = (uint16_t *)heap_caps_malloc(size, MALLOC_CAP_DMA);
+  if (!img) {
+    ESP_LOGE(TAG_LCD, "ERROR: Framebuffers could not get allocated!");
+    return;
+  }
+  ESP_LOGI(TAG_LCD, "Framebuffers initialized");
 }
+
+Display &Display::instance(ROTATION initRot, uint8_t initBaclight) {
+  static Display disp(initRot, initBaclight);
+  return disp;
+}
+
+Display::~Display() { free(img); }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Backlight program
-static ledc_channel_config_t ledc_channel;
-void BK_Init(void) {
+void Display::initBacklight() {
   gpio_config_t bk_gpio_config;
   bk_gpio_config.mode = GPIO_MODE_OUTPUT;
   bk_gpio_config.pin_bit_mask = 1ULL << EXAMPLE_PIN_NUM_BK_LIGHT;
@@ -199,12 +190,12 @@ void BK_Init(void) {
   ledc_channel_config(&ledc_channel);
   ledc_fade_func_install(0);
 }
-void BK_Light(uint8_t Light) {
-  if (Light > 100) {
-    Light = 100;
+void Display::setBacklight(uint8_t brightness) {
+  if (brightness > 100) {
+    brightness = 100;
   }
-  uint16_t Duty = LEDC_MAX_Duty - (81 * (100 - Light));
-  if (Light == 0) {
+  uint16_t Duty = LEDC_MAX_Duty - (81 * (100 - brightness));
+  if (brightness == 0) {
     Duty = 0;
   }
   ledc_set_duty(ledc_channel.speed_mode, ledc_channel.channel, Duty);

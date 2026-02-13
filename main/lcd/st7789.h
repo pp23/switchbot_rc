@@ -1,5 +1,8 @@
 #pragma once
+#include "driver/ledc.h"
+#include "esp_err.h"
 #include "esp_lcd_panel_io.h"
+#include <cstdint>
 
 // LCD SPI GPIO
 // Using SPI2
@@ -32,13 +35,46 @@
 #define LEDC_ResolutionRatio LEDC_TIMER_13_BIT
 #define LEDC_MAX_Duty ((1 << LEDC_ResolutionRatio) - 1)
 
-extern esp_lcd_panel_handle_t panel_handle;
+class Display {
+public:
+  enum ROTATION {
+    PORTRAIT = 0,
+    LANDSCAPE = 90,
+    // not implemented:
+    // PORTRAIT_UPSIDEDOWN = 180,
+    // LANDSCAPE_270 = 270
+  };
 
-void BK_Init(void); // Initialize the LCD backlight, which has been called in
-                    // the LCD_Init function, ignore it
-void BK_Light(uint8_t Light); // Call this function to adjust the brightness of
-                              // the backlight. The value of the parameter Light
-                              // ranges from 0 to 100
+  // singleton required to overcome init race conditions
+  // if different peripherals get used
+  // and to have a static single framebuffer
+  static Display &instance(ROTATION initRot = PORTRAIT,
+                           uint8_t initBaclight = 0);
 
-void LCD_Init(void); // Call this function to initialize the screen (must be
-                     // called in the main function) !!!!!
+  ~Display();
+
+  esp_err_t flush();
+
+  esp_err_t rotate(ROTATION rot);
+  void clear(uint16_t color = 0x0);
+  esp_err_t drawString(const char *s, uint8_t len, uint16_t x0, uint16_t y0,
+                       uint8_t scale, uint16_t fg, uint16_t bg);
+  void setBacklight(uint8_t brightness);
+
+protected:
+  Display(ROTATION rot = PORTRAIT, uint8_t backlight = 0);
+  void drawChar(char c, uint16_t x0, uint16_t y0, uint8_t scale, uint16_t fg,
+                uint16_t bg);
+  void drawGlyph(const uint8_t *glyph, uint16_t x0, uint16_t y0, uint8_t scale,
+                 uint16_t fg, uint16_t bg);
+  void initBacklight();
+
+private:
+  esp_lcd_panel_handle_t panel_handle;
+  ledc_channel_config_t ledc_channel;
+  size_t W;                // = EXAMPLE_LCD_H_RES;
+  size_t H;                // = EXAMPLE_LCD_V_RES;
+  const size_t dimensions; // = W * H;
+  const size_t size;       // = dimensions * sizeof(uint16_t);
+  uint16_t *img = NULL;
+};

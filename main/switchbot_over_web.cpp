@@ -93,6 +93,18 @@ extern "C" void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
 
+  // init LCD
+  Display &lcd(Display::instance(Display::LANDSCAPE, 100));
+  lcd.clear(0x3f);
+  lcd.drawString("Hello", 5, 10, 50, 8, 0xffff, 0x3f);
+  ESP_ERROR_CHECK(lcd.flush());
+  vTaskDelay(3000 / portTICK_PERIOD_MS);
+  lcd.clear(0xff);
+  ESP_ERROR_CHECK(lcd.flush());
+  vTaskDelay(3000 / portTICK_PERIOD_MS);
+  lcd.clear(0x0);
+  ESP_ERROR_CHECK(lcd.flush());
+
   ret = nimble_port_init();
   if (ret != ESP_OK) {
     ESP_LOGE(tag, "Failed to init nimble %d ", ret);
@@ -113,10 +125,6 @@ extern "C" void app_main(void) {
   wifi_init_sta();
   init_http_server();
   on_wifi_connected_fn = on_wifi_connected;
-
-  // init LCD
-  LCD_Init();
-  BK_Light(100);
 
   nimble_port_freertos_init(main_task);
 
