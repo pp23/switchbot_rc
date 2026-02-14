@@ -30,8 +30,13 @@
 
 static const char *tag = "main";
 
+static bool WIFI_CONNECTED = false;
+static bool NTP_SYNCED = false;
+static bool SWITCHBOT_UPDATE = false;
+
 void on_switchbot_data_update(SwitchBot *sb) {
   ESP_LOGI(tag, "SwitchBot update: %s", sb->role_name());
+  SWITCHBOT_UPDATE = true;
   return;
 }
 SwitchBot::on_update_fn sb_update_fn = on_switchbot_data_update;
@@ -52,9 +57,16 @@ void on_ntp_sync(struct timeval *tv) {
   char strftime_buf[64];
   strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
   ESP_LOGE(tag, "Time synced: %s", strftime_buf);
+  NTP_SYNCED = true;
+}
+
+static void on_wifi_disconnected(uint8_t reason, int8_t rssi) {
+  WIFI_CONNECTED = false;
 }
 
 static void on_wifi_connected(esp_netif_t *netif) {
+  WIFI_CONNECTED = true;
+  NTP_SYNCED = false;
   ESP_LOGI(tag, "Wifi connected! Init NTP...");
   // set the operating mode once before client runs, else internal assert will
   // fail: assert failed: sntp_setoperatingmode
@@ -114,19 +126,32 @@ static void DisplayTask(void *params) {
     return;
   }
   char strftime_buf[64];
+  bool lastWifi = !WIFI_CONNECTED, lastNTP = !NTP_SYNCED,
+       lastSwitchbot = !SWITCHBOT_UPDATE;
+  uint8_t timeSecs = 0;
   while (1) {
-    mainCanvas->clear(0x0);
-    time_t now;
-    struct tm timeinfo;
-    time(&now);
-    localtime_r(&now, &timeinfo);
-    uint8_t lenTimestr =
-        (uint8_t)strftime(strftime_buf, sizeof(strftime_buf), "%R", &timeinfo);
-    mainCanvas->drawString(strftime_buf, lenTimestr, 50, 15, 4, 0xff);
-    wifiSign->clear(0x0);
-    wifiSign->drawString("W", 1, 4, 4, 4, 0xff);
-    wifiSign->drawString("X", 1, 5, 5, 3, 0x77);
+    // ntp sync happened or a new minute -> update time
+    if (lastNTP != NTP_SYNCED || timeSecs >= 60) {
+      NTP_SYNCED = false; // reset
+      lastNTP = false;
+      timeSecs = 0;
+      mainCanvas->clear(0x0);
+      time_t now;
+      struct tm timeinfo;
+      time(&now);
+      localtime_r(&now, &timeinfo);
+      uint8_t lenTimestr = (uint8_t)strftime(strftime_buf, sizeof(strftime_buf),
+                                             "%R", &timeinfo);
+      mainCanvas->drawString(strftime_buf, lenTimestr, 50, 15, 4, 0xff);
+    }
+    // wifi update
+    if (lastWifi != WIFI_CONNECTED) {
+      lastWifi = WIFI_CONNECTED;
+      wifiSign->clear(0x0);
+      wifiSign->drawString("W", 1, 4, 4, 4, WIFI_CONNECTED ? 0x07e0 : 0xf800);
+    }
     vTaskDelay(1000 / portTICK_PERIOD_MS);
+    timeSecs += 1;
   }
   delete mainCanvas;
   delete wifiSign;
@@ -143,7 +168,7 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(ret);
 
   // init LCD
-  Display &lcd = Display::instance(Display::LANDSCAPE, 100);
+  Display &lcd = Display::instance(Display::LANDSCAPE, 1);
   ESP_LOGI(tag, "Display: %p", &lcd);
   xTaskCreate(DisplayTask, "DISPLAYTASK", 4096, &lcd, tskIDLE_PRIORITY,
               &displayTaskHandle);
@@ -168,6 +193,7 @@ extern "C" void app_main(void) {
   wifi_init_sta();
   init_http_server();
   on_wifi_connected_fn = on_wifi_connected;
+  on_wifi_disconnected_fn = on_wifi_disconnected;
 
   nimble_port_freertos_init(main_task);
 
