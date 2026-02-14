@@ -29,6 +29,7 @@
 #include "switchbot_net.h"
 
 static const char *tag = "main";
+
 void on_switchbot_data_update(SwitchBot *sb) {
   ESP_LOGI(tag, "SwitchBot update: %s", sb->role_name());
   return;
@@ -95,15 +96,13 @@ extern "C" void app_main(void) {
 
   // init LCD
   Display &lcd(Display::instance(Display::LANDSCAPE, 100));
-  lcd.clear(0x3f);
-  lcd.drawString("Hello", 5, 10, 50, 8, 0xffff, 0x3f);
-  ESP_ERROR_CHECK(lcd.flush());
-  vTaskDelay(3000 / portTICK_PERIOD_MS);
-  lcd.clear(0xff);
-  ESP_ERROR_CHECK(lcd.flush());
-  vTaskDelay(3000 / portTICK_PERIOD_MS);
-  lcd.clear(0x0);
-  ESP_ERROR_CHECK(lcd.flush());
+  Canvas *a = lcd.createArea(0, 0, 100, 100);
+  Canvas *b = lcd.createArea(50, 0, 100, 100);
+  a->clear(0x3f);
+  b->clear(0xffff);
+  a->drawString("A", 1, 10, 10, 8, 0xff, 0x0);
+  delete b;
+  delete a;
 
   ret = nimble_port_init();
   if (ret != ESP_OK) {

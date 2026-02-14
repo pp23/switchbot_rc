@@ -1,10 +1,12 @@
 #include "driver/gpio.h"
+#include "driver/spi_common.h"
 #include "esp_err.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_st7789.h"
 #include "esp_lcd_types.h"
 #include "esp_log.h"
 #include "hal/spi_types.h"
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 
@@ -14,8 +16,110 @@
 static const char *TAG_LCD = "WS_LCD";
 #define LCD_SPI_HOST_ID SPI2_HOST
 
+void Canvas::drawGlyph(const uint8_t *glyph, uint16_t x0, uint16_t y0,
+                       uint8_t scale, uint16_t fg) {
+  for (uint16_t y = 0; y < 8; ++y) {
+    const uint8_t row = glyph[y];
+    for (uint8_t sy = 0; sy < scale; ++sy) {
+      const uint16_t Y = y0 + y * scale + sy;
+      if (Y >= H()) {
+        continue;
+      }
+      for (uint16_t x = 0; x < 8; ++x) {
+        uint16_t color = fg;
+        if (!(row & (1 << x))) {
+          continue; // do not modify the background -> keeps it transparent
+        }
+        for (uint8_t sx = 0; sx < scale; ++sx) {
+          const uint16_t X = x0 + x * scale + sx;
+          if (X < W()) {
+            _buf[Y * W() + X] = color;
+          }
+        }
+      }
+    }
+  }
+  _d->flush(_x0, _y0, _x1, _y1, _buf);
+}
+
+void Canvas::drawChar(char c, uint16_t x0, uint16_t y0, uint8_t scale,
+                      uint16_t fg) {
+  const uint8_t *glyph = font8x8_basic[(uint8_t)c];
+  drawGlyph(glyph, x0, y0, scale, fg);
+}
+
+esp_err_t Canvas::drawString(const char *s, uint8_t len, uint16_t x0,
+                             uint16_t y0, uint8_t scale, uint16_t fg) {
+  // will the string fit on the screen?
+  if (x0 + len * 8 * scale >= W()) {
+    return ESP_FAIL;
+  }
+  if (y0 + 8 * scale >= H()) {
+    return ESP_FAIL;
+  }
+  for (uint8_t i = 0; i < len; ++i) {
+    drawChar(s[i], x0 + 8 * scale * i, y0, scale, fg);
+  }
+  return ESP_OK;
+}
+
+esp_err_t Canvas::clear(uint16_t color) {
+  memset(_buf, color, size());
+  return _d->flush(_x0, _y0, _x1, _y1, _buf);
+}
+
+size_t Canvas::size() const { return W() * H() * sizeof(uint16_t); }
+
+uint16_t Canvas::W() const { return _x1 - _x0; }
+
+uint16_t Canvas::H() const { return _y1 - _y0; }
+
+Canvas::Canvas(IDisplay *d, uint16_t *buf, uint16_t x0, uint16_t y0,
+               uint16_t x1, uint16_t y1)
+    : _d(d), _buf(buf), _x0(x0), _y0(y0), _x1(x1), _y1(y1) {
+  ESP_LOGI("CANVAS", "Created (%d,%d)x(%d,%d)", x0, y0, x1, y1);
+}
+
+esp_err_t Display::flush(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
+                         uint16_t *buf) {
+  esp_err_t err = esp_lcd_panel_draw_bitmap(panel_handle, x0, y0, x1, y1, buf);
+  ESP_LOGI(TAG_LCD, "Flushing (%d,%d)x(%d,%d): %02x... error: %d", x0, y0, x1,
+           y1, buf[0], err);
+  return err;
+}
 esp_err_t Display::flush() {
-  return esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, W, H, img);
+  esp_err_t err =
+      esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, width(), height(), img);
+  return err;
+}
+
+// occupies a memory range in the overall framebuffer that defines the area
+// also overlapping areas occupy their own memory
+// as of now it is up to the user to avoid overlapping areas
+Canvas *Display::createArea(uint16_t x0, uint16_t y0, uint16_t x1,
+                            uint16_t y1) {
+  if (x1 > W || x1 <= x0) {
+    ESP_LOGE(TAG_LCD, "Invalid area x-values: x0: %d, x1: %d", x0, x1);
+    return NULL;
+  }
+  if (y1 > H || y1 <= y0) {
+    ESP_LOGE(TAG_LCD, "Invalid area y-values: y0: %d, y1: %d", y0, y1);
+    return NULL;
+  }
+  const uint16_t w = x1 - x0;
+  const uint16_t h = y1 - y0;
+  const size_t m0 = _lastM1;
+  const size_t m1 = _lastM1 + w * h;
+  if (m1 > dimensions) {
+    ESP_LOGE(TAG_LCD,
+             "area (%d,%d)x(%d,%d) starting at memory index %d exceeds max "
+             "dimensions %d",
+             x0, x1, y0, y1, m1, dimensions);
+    return NULL;
+  }
+  uint16_t *buf = &img[m0];
+  _lastM1 = m1;
+  return new Canvas(this, buf, x0, y0, x1, y1);
 }
 
 esp_err_t Display::rotate(ROTATION rot) {
@@ -55,49 +159,9 @@ esp_err_t Display::rotate(ROTATION rot) {
 
 void Display::clear(uint16_t color) { memset(img, color, size); }
 
-void Display::drawGlyph(const uint8_t *glyph, uint16_t x0, uint16_t y0,
-                        uint8_t scale, uint16_t fg, uint16_t bg) {
-  for (uint16_t y = 0; y < 8; ++y) {
-    const uint8_t row = glyph[y];
-    for (uint8_t sy = 0; sy < scale; ++sy) {
-      const uint16_t Y = y0 + y * scale + sy;
-      if (Y >= H) {
-        continue;
-      }
-      for (uint16_t x = 0; x < 8; ++x) {
-        const uint16_t color = (row & (1 << x)) ? fg : bg;
-        for (uint8_t sx = 0; sx < scale; ++sx) {
-          const uint16_t X = x0 + x * scale + sx;
-          if (X < W) {
-            img[Y * W + X] = color;
-          }
-        }
-      }
-    }
-  }
-}
+uint16_t Display::width() const { return W; }
 
-void Display::drawChar(char c, uint16_t x0, uint16_t y0, uint8_t scale,
-                       uint16_t fg, uint16_t bg) {
-  const uint8_t *glyph = font8x8_basic[(uint8_t)c];
-  drawGlyph(glyph, x0, y0, scale, fg, bg);
-}
-
-esp_err_t Display::drawString(const char *s, uint8_t len, uint16_t x0,
-                              uint16_t y0, uint8_t scale, uint16_t fg,
-                              uint16_t bg) {
-  // will the string fit on the screen?
-  if (x0 + len * 8 * scale >= W) {
-    return ESP_FAIL;
-  }
-  if (y0 + 8 * scale >= H) {
-    return ESP_FAIL;
-  }
-  for (uint8_t i = 0; i < len; ++i) {
-    drawChar(s[i], x0 + 8 * scale * i, y0, scale, fg, bg);
-  }
-  return ESP_OK;
-}
+uint16_t Display::height() const { return H; }
 
 Display::Display(ROTATION rot, uint8_t backlight)
     : W(EXAMPLE_LCD_H_RES), H(EXAMPLE_LCD_V_RES), dimensions(W * H),
@@ -150,7 +214,7 @@ Display::Display(ROTATION rot, uint8_t backlight)
   ESP_LOGI(TAG_LCD, "LCD initialized");
   ESP_LOGI(TAG_LCD, "Init framebuffers...");
   // framebuffers need to get initialized after drivers!
-  img = (uint16_t *)heap_caps_malloc(size, MALLOC_CAP_DMA);
+  img = (uint16_t *)spi_bus_dma_memory_alloc(LCD_SPI_HOST_ID, size, 0);
   if (!img) {
     ESP_LOGE(TAG_LCD, "ERROR: Framebuffers could not get allocated!");
     return;

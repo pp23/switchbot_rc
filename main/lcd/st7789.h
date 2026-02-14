@@ -2,7 +2,9 @@
 #include "driver/ledc.h"
 #include "esp_err.h"
 #include "esp_lcd_panel_io.h"
+#include <cstddef>
 #include <cstdint>
+#include <sys/types.h>
 
 // LCD SPI GPIO
 // Using SPI2
@@ -35,7 +37,36 @@
 #define LEDC_ResolutionRatio LEDC_TIMER_13_BIT
 #define LEDC_MAX_Duty ((1 << LEDC_ResolutionRatio) - 1)
 
-class Display {
+class IDisplay {
+public:
+  virtual esp_err_t flush(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
+                          uint16_t *buf) = 0;
+};
+
+class Canvas {
+public:
+  Canvas(IDisplay *d, uint16_t *buf, uint16_t x0, uint16_t y0, uint16_t x1,
+         uint16_t y1);
+  ~Canvas() {}
+  esp_err_t clear(uint16_t color = 0x0);
+  esp_err_t drawString(const char *s, uint8_t len, uint16_t x0, uint16_t y0,
+                       uint8_t scale, uint16_t fg);
+
+protected:
+  void drawChar(char c, uint16_t x0, uint16_t y0, uint8_t scale, uint16_t fg);
+  void drawGlyph(const uint8_t *glyph, uint16_t x0, uint16_t y0, uint8_t scale,
+                 uint16_t fg);
+
+private:
+  size_t size() const;
+  uint16_t W() const;
+  uint16_t H() const;
+  IDisplay *_d;
+  uint16_t *_buf;
+  uint16_t _x0, _y0, _x1, _y1;
+};
+
+class Display : public IDisplay {
 public:
   enum ROTATION {
     PORTRAIT = 0,
@@ -50,31 +81,33 @@ public:
   // and to have a static single framebuffer
   static Display &instance(ROTATION initRot = PORTRAIT,
                            uint8_t initBaclight = 0);
-
+  Display(const Display &) = delete;
+  Display &operator=(const Display &) = delete;
   ~Display();
-
+  //! occupies a memory range in the overall framebuffer that defines the area
+  Canvas *createArea(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
+  esp_err_t flush(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
+                  uint16_t *buf) override;
   esp_err_t flush();
 
   esp_err_t rotate(ROTATION rot);
   void clear(uint16_t color = 0x0);
-  esp_err_t drawString(const char *s, uint8_t len, uint16_t x0, uint16_t y0,
-                       uint8_t scale, uint16_t fg, uint16_t bg);
   void setBacklight(uint8_t brightness);
+
+  uint16_t width() const;
+  uint16_t height() const;
 
 protected:
   Display(ROTATION rot = PORTRAIT, uint8_t backlight = 0);
-  void drawChar(char c, uint16_t x0, uint16_t y0, uint8_t scale, uint16_t fg,
-                uint16_t bg);
-  void drawGlyph(const uint8_t *glyph, uint16_t x0, uint16_t y0, uint8_t scale,
-                 uint16_t fg, uint16_t bg);
   void initBacklight();
 
 private:
   esp_lcd_panel_handle_t panel_handle;
   ledc_channel_config_t ledc_channel;
-  size_t W;                // = EXAMPLE_LCD_H_RES;
-  size_t H;                // = EXAMPLE_LCD_V_RES;
+  uint16_t W;              // = EXAMPLE_LCD_H_RES;
+  uint16_t H;              // = EXAMPLE_LCD_V_RES;
   const size_t dimensions; // = W * H;
   const size_t size;       // = dimensions * sizeof(uint16_t);
   uint16_t *img = NULL;
+  size_t _lastM1 = 0; // last area upper boundary memory index
 };
