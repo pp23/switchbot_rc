@@ -56,7 +56,12 @@ void on_ntp_sync(struct timeval *tv) {
 
 static void on_wifi_connected(esp_netif_t *netif) {
   ESP_LOGI(tag, "Wifi connected! Init NTP...");
-  esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+  // set the operating mode once before client runs, else internal assert will
+  // fail: assert failed: sntp_setoperatingmode
+  // (Operating mode must not be set while SNTP client is running)
+  if (esp_sntp_getoperatingmode() != ESP_SNTP_OPMODE_POLL) {
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+  }
   esp_sntp_setservername(0, "pool.ntp.org");
   // initial sync as soon as possible
   esp_sntp_set_sync_interval(1000);
