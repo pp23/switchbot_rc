@@ -85,6 +85,49 @@ static void on_wifi_connected(esp_netif_t *netif) {
 void sync_cb() { gDeviceController.on_sync(); }
 void reset_cb(int reason) { gDeviceController.on_reset(reason); }
 
+TaskHandle_t displayTaskHandle;
+
+static void DisplayTask(void *params) {
+  ESP_LOGI("DISPLAY", "Display p: %p", params);
+  if (!params) {
+    ESP_LOGE(tag, "No display set!");
+    return;
+  }
+  Display &lcd = *(Display *)params;
+  lcd.clear(0x0);
+  lcd.flush();
+  Canvas *wifiSign = lcd.createArea(lcd.width() - 50, 0, lcd.width() - 10, 40);
+  if (!wifiSign) {
+    ESP_LOGE(tag, "wifiSign canvas null");
+    return;
+  }
+  Canvas *mainCanvas =
+      lcd.createArea(lcd.width() / 10, lcd.height() / 3, (lcd.width() / 10) * 8,
+                     (lcd.height() / 3) * 2);
+  if (!mainCanvas) {
+    ESP_LOGE(tag, "time canvas null");
+    return;
+  }
+  char strftime_buf[64];
+  while (1) {
+    mainCanvas->clear(0x0);
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    uint8_t lenTimestr =
+        (uint8_t)strftime(strftime_buf, sizeof(strftime_buf), "%R", &timeinfo);
+    mainCanvas->drawString(strftime_buf, lenTimestr, 50, 15, 4, 0xff);
+    wifiSign->clear(0x0);
+    wifiSign->drawString("W", 1, 4, 4, 4, 0xff);
+    wifiSign->drawString("X", 1, 5, 5, 3, 0x77);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+  delete mainCanvas;
+  delete wifiSign;
+  vTaskDelete(NULL);
+}
+
 extern "C" void app_main(void) {
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -95,14 +138,10 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(ret);
 
   // init LCD
-  Display &lcd(Display::instance(Display::LANDSCAPE, 100));
-  Canvas *a = lcd.createArea(0, 0, 100, 100);
-  Canvas *b = lcd.createArea(50, 0, 100, 100);
-  a->clear(0x3f);
-  b->clear(0xffff);
-  a->drawString("A", 1, 10, 10, 8, 0xff, 0x0);
-  delete b;
-  delete a;
+  Display &lcd = Display::instance(Display::LANDSCAPE, 100);
+  ESP_LOGI(tag, "Display: %p", &lcd);
+  xTaskCreate(DisplayTask, "DISPLAYTASK", 4096, &lcd, tskIDLE_PRIORITY,
+              &displayTaskHandle);
 
   ret = nimble_port_init();
   if (ret != ESP_OK) {
