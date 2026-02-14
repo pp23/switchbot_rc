@@ -62,8 +62,13 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
     esp_wifi_connect();
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    wifi_event_sta_disconnected_t *event =
+        (wifi_event_sta_disconnected_t *)event_data;
     ESP_LOGE(tag, "Wifi disconnect. Retrying %d/%d", wifi_connect_retry_counter,
              MAX_WIFI_CONNECT_RETRIES);
+    if (on_wifi_disconnected_fn != NULL) {
+      on_wifi_disconnected_fn(event->reason, event->rssi);
+    }
     if (wifi_connect_retry_counter++ < MAX_WIFI_CONNECT_RETRIES) {
       esp_wifi_connect();
     } else {
