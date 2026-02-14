@@ -148,7 +148,7 @@ static void DisplayTask(void *params) {
     if (lastWifi != WIFI_CONNECTED) {
       lastWifi = WIFI_CONNECTED;
       wifiSign->clear(0x0);
-      wifiSign->drawString("W", 1, 4, 4, 4, WIFI_CONNECTED ? 0x07e0 : 0xf800);
+      wifiSign->drawString("W", 1, 4, 4, 4, WIFI_CONNECTED ? 0xe007 : 0x00f8);
     }
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     timeSecs += 1;

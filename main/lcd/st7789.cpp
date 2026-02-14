@@ -196,7 +196,7 @@ Display::Display(ROTATION rot, uint8_t backlight)
       (esp_lcd_spi_bus_handle_t)LCD_SPI_HOST_ID, &io_config, &io_handle));
 
   esp_lcd_panel_dev_config_t panel_config;
-  panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
+  panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
   panel_config.bits_per_pixel = 16;
   panel_config.reset_gpio_num = EXAMPLE_PIN_NUM_LCD_RST;
   // Create LCD panel handle for ST7789, with the SPI IO device handle
