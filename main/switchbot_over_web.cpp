@@ -2,6 +2,7 @@
 #include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_netif_ip_addr.h"
 #include "esp_netif_sntp.h"
 #include "esp_netif_types.h"
 #include "esp_sleep.h"
@@ -36,6 +37,7 @@
 
 static const char *tag = "main";
 
+static esp_ip4_addr_t WIFI_IPV4;
 static int8_t WIFI_RSSI = 0;
 static bool WIFI_CONNECTED = false;
 static bool NTP_SYNCED = false;
@@ -103,9 +105,10 @@ static void on_wifi_disconnected(uint8_t reason, int8_t rssi) {
   WIFI_CONNECTED = false;
 }
 
-static void on_wifi_connected(esp_netif_t *netif) {
+static void on_wifi_connected(esp_netif_t *netif, esp_ip4_addr_t ipv4) {
   WIFI_CONNECTED = true;
   NTP_SYNCED = false;
+  WIFI_IPV4 = ipv4;
   ESP_LOGI(tag, "Wifi connected! Init NTP...");
   // set the operating mode once before client runs, else internal assert will
   // fail: assert failed: sntp_setoperatingmode
@@ -186,6 +189,14 @@ static void DisplayTask(void *params) {
     ESP_LOGE(tag, "time canvas null");
     return;
   }
+  Canvas *bottomCanvas =
+      lcd.createArea((lcd.width() / 16) * 3, (lcd.height() / 3 * 2) + 20,
+                     (lcd.width() / 16) * 15, lcd.height());
+  if (!bottomCanvas) {
+    ESP_LOGE(tag, "bottom canvas null");
+    return;
+  }
+
   char strftime_buf[64];
   int8_t lastWifiRSSI = 0;
   bool lastWifi = !WIFI_CONNECTED, lastNTP = !NTP_SYNCED;
@@ -240,10 +251,19 @@ static void DisplayTask(void *params) {
       lastWifi = WIFI_CONNECTED;
       wifiSign->clear(0x0);
       wifiSign->drawString("W", 1, 4, 4, 4, WIFI_CONNECTED ? 0xe007 : 0x00f8);
+      bottomCanvas->clear(0x0);
+      if (WIFI_CONNECTED) {
+        char ipv4[16];
+        int8_t len = snprintf(ipv4, 16, IPSTR, IP2STR(&WIFI_IPV4));
+        if (len > 0) {
+          bottomCanvas->drawString(ipv4, len, 10, 0, 2, 0xffff);
+        }
+      }
     }
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     timeSecs += 1;
   }
+  delete bottomCanvas;
   delete mainCanvas;
   delete wifiRssiSign;
   delete wifiSign;

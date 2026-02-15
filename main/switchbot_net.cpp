@@ -6,6 +6,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_netif_ip_addr.h"
 #include "esp_netif_types.h"
 #include "esp_wifi.h"
 #include "esp_wifi_types_generic.h"
@@ -98,7 +99,7 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
     }
     // TODO: rename as connected does not mean "IP from DHCP received"
     if (on_wifi_connected_fn != NULL) {
-      on_wifi_connected_fn(event->esp_netif);
+      on_wifi_connected_fn(event->esp_netif, event->ip_info.ip);
     }
     if (on_wifi_rssi_fn != NULL) {
       wifi_ap_record_t ap_info;

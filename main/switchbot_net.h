@@ -19,7 +19,7 @@ typedef struct rest_server_context {
   char scratch[SCRATCH_BUFSIZE];
 } rest_server_context_t;
 
-typedef void (*on_connected_fn)(esp_netif_t *netif);
+typedef void (*on_connected_fn)(esp_netif_t *netif, esp_ip4_addr_t ipv4);
 typedef void (*on_disconnected_fn)(uint8_t reason, int8_t rssi);
 typedef void (*on_rssi_fn)(int8_t rssi);
 
