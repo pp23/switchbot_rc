@@ -21,6 +21,7 @@ typedef struct rest_server_context {
 
 typedef void (*on_connected_fn)(esp_netif_t *netif);
 typedef void (*on_disconnected_fn)(uint8_t reason, int8_t rssi);
+typedef void (*on_rssi_fn)(int8_t rssi);
 
 static const uint8_t MAX_WIFI_CONNECT_RETRIES = 3;
 static const uint8_t WIFI_CONNECT_RETRY_DELAY_SEC = 30;
@@ -30,5 +31,6 @@ void init_http_server();
 
 inline on_connected_fn on_wifi_connected_fn = NULL;
 inline on_disconnected_fn on_wifi_disconnected_fn = NULL;
+inline on_rssi_fn on_wifi_rssi_fn = NULL;
 
 #endif

@@ -36,6 +36,7 @@
 
 static const char *tag = "main";
 
+static int8_t WIFI_RSSI = 0;
 static bool WIFI_CONNECTED = false;
 static bool NTP_SYNCED = false;
 static bool SWITCHBOT_UPDATE = false;
@@ -94,6 +95,8 @@ void on_ntp_sync(struct timeval *tv) {
   NTP_SYNCED = true;
 }
 
+static void on_wifi_rssi_update(int8_t rssi) { WIFI_RSSI = rssi; }
+
 static void on_wifi_disconnected(uint8_t reason, int8_t rssi) {
   WIFI_CONNECTED = false;
 }
@@ -147,9 +150,17 @@ static void DisplayTask(void *params) {
   Display &lcd = *(Display *)params;
   lcd.clear(0x0);
   lcd.flush();
-  Canvas *wifiSign = lcd.createArea(lcd.width() - 50, 0, lcd.width() - 10, 40);
+  Canvas *wifiSign =
+      lcd.createArea(lcd.width() - 150, 0, lcd.width() - 110, 40);
   if (!wifiSign) {
     ESP_LOGE(tag, "wifiSign canvas null");
+    return;
+  }
+  // 110x40
+  Canvas *wifiRssiSign =
+      lcd.createArea(lcd.width() - 110, 0, lcd.width() - 0, 40);
+  if (!wifiRssiSign) {
+    ESP_LOGE(tag, "wifiRssiSign canvas null");
     return;
   }
   Canvas *mainCanvas =
@@ -160,8 +171,8 @@ static void DisplayTask(void *params) {
     return;
   }
   char strftime_buf[64];
-  bool lastWifi = !WIFI_CONNECTED, lastNTP = !NTP_SYNCED,
-       lastSwitchbot = !SWITCHBOT_UPDATE;
+  int8_t lastWifiRSSI = 0;
+  bool lastWifi = !WIFI_CONNECTED, lastNTP = !NTP_SYNCED;
   uint8_t timeSecs = 0;
   while (1) {
     // ntp sync happened or a new minute -> update time
@@ -178,7 +189,25 @@ static void DisplayTask(void *params) {
                                              "%R", &timeinfo);
       mainCanvas->drawString(strftime_buf, lenTimestr, 50, 15, 4, 0xff);
     }
-    // wifi update
+    // wifi updates
+    if (lastWifiRSSI != WIFI_RSSI) {
+      lastWifiRSSI = WIFI_RSSI;
+      char rssiStr[5];
+      int8_t len = snprintf(rssiStr, 5, "%d", WIFI_RSSI);
+      if (len > 0) {
+        wifiRssiSign->clear(0x0);
+        if (wifiRssiSign->drawString(rssiStr, len, 4, 4, 3,
+                                     WIFI_CONNECTED ? 0xe007 : 0x00f8) !=
+            ESP_OK) {
+          ESP_LOGE(
+              tag,
+              "error: could not draw wifi rssi string: %s len: %d rssi: %d",
+              rssiStr, len, WIFI_RSSI);
+        }
+      } else {
+        ESP_LOGE(tag, "error: wifi_rssi_update: rssi: %d", WIFI_RSSI);
+      }
+    }
     if (lastWifi != WIFI_CONNECTED) {
       lastWifi = WIFI_CONNECTED;
       wifiSign->clear(0x0);
@@ -188,6 +217,7 @@ static void DisplayTask(void *params) {
     timeSecs += 1;
   }
   delete mainCanvas;
+  delete wifiRssiSign;
   delete wifiSign;
   vTaskDelete(NULL);
 }
@@ -228,6 +258,7 @@ extern "C" void app_main(void) {
   init_http_server();
   on_wifi_connected_fn = on_wifi_connected;
   on_wifi_disconnected_fn = on_wifi_disconnected;
+  on_wifi_rssi_fn = on_wifi_rssi_update;
 
   nimble_port_freertos_init(main_task);
 

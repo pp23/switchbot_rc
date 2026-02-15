@@ -69,6 +69,9 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
     if (on_wifi_disconnected_fn != NULL) {
       on_wifi_disconnected_fn(event->reason, event->rssi);
     }
+    if (on_wifi_rssi_fn != NULL) {
+      on_wifi_rssi_fn(event->rssi);
+    }
     if (wifi_connect_retry_counter++ < MAX_WIFI_CONNECT_RETRIES) {
       esp_wifi_connect();
     } else {
@@ -97,9 +100,21 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
     if (on_wifi_connected_fn != NULL) {
       on_wifi_connected_fn(event->esp_netif);
     }
+    if (on_wifi_rssi_fn != NULL) {
+      wifi_ap_record_t ap_info;
+      if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        on_wifi_rssi_fn(ap_info.rssi);
+      }
+    }
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
     ESP_LOGI(tag, "Wifi STA connected");
     wifi_connect_retry_counter = 0;
+    if (on_wifi_rssi_fn != NULL) {
+      wifi_ap_record_t ap_info;
+      if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        on_wifi_rssi_fn(ap_info.rssi);
+      }
+    }
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_HOME_CHANNEL_CHANGE) {
     ESP_LOGI(tag, "Wifi home channel change");
