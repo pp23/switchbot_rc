@@ -1,8 +1,10 @@
 // #include "bt/host/nimble/esp-hci/include/esp_nimble_hci.h"
+#include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
 #include "esp_netif_types.h"
+#include "esp_sleep.h"
 #include "esp_sntp.h"
 #include "freertos/idf_additions.h"
 #include "host/ble_gatt.h"
@@ -18,6 +20,7 @@
 #include <ctime>
 #include <netdb.h>
 #include <sys/_timeval.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 
@@ -28,11 +31,42 @@
 #include "switchbot.h"
 #include "switchbot_net.h"
 
+#define ABSOLUTE(x) ((x) < 0 ? -(x) : (x))
+// #define DEEP_SLEEP_ENABLED
+
 static const char *tag = "main";
 
 static bool WIFI_CONNECTED = false;
 static bool NTP_SYNCED = false;
 static bool SWITCHBOT_UPDATE = false;
+
+static const uint8_t SLEEP_START_HOUR = 16; // start deep sleep at 16h UTC
+static const uint8_t SLEEP_END_HOUR = 12;   // end deep sleep at 12h UTC
+static const uint64_t SLEEP_DIFF_USEC =
+    (uint64_t)(24 - ABSOLUTE(SLEEP_END_HOUR - SLEEP_START_HOUR) * (uint64_t)60 *
+                        (uint64_t)60 * (uint64_t)1000 * (uint64_t)1000);
+
+void sleep_task(void *params) {
+  time_t now;
+  struct tm timeinfo;
+  struct timeval tv;
+  while (1) {
+    vTaskDelay(60 * 1000 / portTICK_PERIOD_MS);
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    if (timeinfo.tm_hour >= SLEEP_START_HOUR) {
+      if (gettimeofday(&tv, NULL) != 0) {
+        continue; // try again next iteration
+      }
+      // correct the sleep time to the full hour
+      uint64_t sleep_usec = SLEEP_DIFF_USEC -
+                            (timeinfo.tm_min * 60 * 1000 * 1000) -
+                            (timeinfo.tm_sec * 1000 * 1000);
+      ESP_LOGI("SLEEP", "Entering deep sleep...");
+      esp_deep_sleep(sleep_usec);
+    }
+  }
+}
 
 void on_switchbot_data_update(SwitchBot *sb) {
   ESP_LOGI(tag, "SwitchBot update: %s", sb->role_name());
@@ -196,6 +230,11 @@ extern "C" void app_main(void) {
   on_wifi_disconnected_fn = on_wifi_disconnected;
 
   nimble_port_freertos_init(main_task);
+
+#ifdef DEEP_SLEEP_ENABLED
+  // start sleep task
+  xTaskCreate(sleep_task, "SLEEP", 4096, NULL, tskIDLE_PRIORITY, NULL);
+#endif // DEEP_SLEEP_ENABLED
 
   return;
 }
