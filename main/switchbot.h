@@ -63,6 +63,9 @@ public:
 
   static void send_command(DeviceConnection *conn, Command cmd);
 
+  //! returns current battery status percentage
+  uint8_t battery() const { return _batteryPercentage; }
+
 protected:
   constexpr static const uint8_t commands[1][3] = {
       {0x57, 0x01, 0x01}, // ON (moves finger)

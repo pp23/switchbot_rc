@@ -40,6 +40,7 @@ static int8_t WIFI_RSSI = 0;
 static bool WIFI_CONNECTED = false;
 static bool NTP_SYNCED = false;
 static bool SWITCHBOT_UPDATE = false;
+static uint8_t SWITCHBOT_BAT = 0;
 
 static const uint8_t SLEEP_START_HOUR = 16; // start deep sleep at 16h UTC
 static const uint8_t SLEEP_END_HOUR = 12;   // end deep sleep at 12h UTC
@@ -71,6 +72,7 @@ void sleep_task(void *params) {
 
 void on_switchbot_data_update(SwitchBot *sb) {
   ESP_LOGI(tag, "SwitchBot update: %s", sb->role_name());
+  SWITCHBOT_BAT = sb->battery();
   SWITCHBOT_UPDATE = true;
   return;
 }
@@ -150,6 +152,20 @@ static void DisplayTask(void *params) {
   Display &lcd = *(Display *)params;
   lcd.clear(0x0);
   lcd.flush();
+  // 40x40
+  Canvas *sbSign = lcd.createArea(lcd.width() - 270, 0, lcd.width() - 230, 40);
+  if (!sbSign) {
+    ESP_LOGE(tag, "sbSign canvas null");
+    return;
+  }
+  // 80x40
+  Canvas *sbBatSign =
+      lcd.createArea(lcd.width() - 230, 0, lcd.width() - 150, 40);
+  if (!sbBatSign) {
+    ESP_LOGE(tag, "sbBatSign canvas null");
+    return;
+  }
+  // 40x40
   Canvas *wifiSign =
       lcd.createArea(lcd.width() - 150, 0, lcd.width() - 110, 40);
   if (!wifiSign) {
@@ -175,6 +191,18 @@ static void DisplayTask(void *params) {
   bool lastWifi = !WIFI_CONNECTED, lastNTP = !NTP_SYNCED;
   uint8_t timeSecs = 0;
   while (1) {
+    // switchbot update
+    if (SWITCHBOT_UPDATE) {
+      SWITCHBOT_UPDATE = false;
+      sbSign->clear(0x0);
+      sbSign->drawString("S", 1, 4, 4, 4, 0xe007);
+      char bat[5]; // 100% + 0-byte
+      int8_t len = snprintf(bat, 5, "%d%%", SWITCHBOT_BAT);
+      if (len > 0) {
+        sbBatSign->clear(0x0);
+        sbBatSign->drawString(bat, len, 4, 4, 3, 0xe007);
+      }
+    }
     // ntp sync happened or a new minute -> update time
     if (lastNTP != NTP_SYNCED || timeSecs >= 60) {
       NTP_SYNCED = false; // reset
@@ -219,6 +247,8 @@ static void DisplayTask(void *params) {
   delete mainCanvas;
   delete wifiRssiSign;
   delete wifiSign;
+  delete sbBatSign;
+  delete sbSign;
   vTaskDelete(NULL);
 }
 
