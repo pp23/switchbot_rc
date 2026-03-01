@@ -9,6 +9,8 @@
 
 #include "advertising_event.h"
 #include "rx_event.h"
+#include <cstdint>
+#include <cstring>
 
 static const char *_tag = "ble";
 static const esp_event_base_t bleEventBase = "ble_event";
@@ -317,6 +319,12 @@ int on_gap_event(struct ble_gap_event *event, void *arg) {
     struct ble_hs_adv_fields advFields;
     parse_adv_data(&advFields, event->ext_disc.data,
                    event->ext_disc.length_data);
+    // set the discovered address as device address of advertised data to allow
+    // role distinguishment by address
+    // !!! WARNING !!! No value gets copied! Pointer is only valid within this
+    // function!
+    advFields.device_addr = &event->ext_disc.addr.val[0];
+    advFields.device_addr_is_present = 1;
     // find a role that matches the discovered device
     ESP_LOGI(_tag, "controller-pointer: %p", __gDeviceController);
     IBLEDeviceRole *device = __gDeviceController->find_role(advFields);
