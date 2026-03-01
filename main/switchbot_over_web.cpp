@@ -33,8 +33,8 @@
 #include "switchbot_net.h"
 
 #define ABSOLUTE(x) ((x) < 0 ? -(x) : (x))
-// #define DEEP_SLEEP_ENABLED
 
+#define DEEP_SLEEP_ENABLED
 #define WIFI_ENABLED
 
 static const char *tag = "main";
@@ -46,24 +46,30 @@ static bool NTP_SYNCED = false;
 static bool SWITCHBOT_UPDATE = false;
 static uint8_t SWITCHBOT_BAT = 0;
 
-static const uint8_t SLEEP_START_HOUR = 16; // start deep sleep at 16h UTC
-static const uint8_t SLEEP_END_HOUR = 12;   // end deep sleep at 12h UTC
+/****** DEEP SLEEP CONFIGURATION ******/
+static const uint8_t SLEEP_START_HOUR = 19; // start deep sleep at 16h UTC
+static const uint8_t SLEEP_END_HOUR = 22;   // end deep sleep at 12h UTC
 static const uint64_t SLEEP_DIFF_USEC =
-    (uint64_t)(24 - ABSOLUTE(SLEEP_END_HOUR - SLEEP_START_HOUR) * (uint64_t)60 *
-                        (uint64_t)60 * (uint64_t)1000 * (uint64_t)1000);
+    (uint64_t)(ABSOLUTE((SLEEP_END_HOUR < SLEEP_START_HOUR ? 24 : 0) -
+                        ABSOLUTE(SLEEP_END_HOUR - SLEEP_START_HOUR)) *
+               (uint64_t)60 * (uint64_t)60 * (uint64_t)1000 * (uint64_t)1000);
 
 void sleep_task(void *params) {
   time_t now;
   struct tm timeinfo;
-  struct timeval tv;
   while (1) {
     vTaskDelay(60 * 1000 / portTICK_PERIOD_MS);
     time(&now);
     localtime_r(&now, &timeinfo);
-    if (timeinfo.tm_hour >= SLEEP_START_HOUR) {
-      if (gettimeofday(&tv, NULL) != 0) {
-        continue; // try again next iteration
-      }
+    ESP_LOGI("sleep", "tm_hour: %d >= %d ?", timeinfo.tm_hour,
+             SLEEP_START_HOUR);
+    ESP_LOGI("sleep", "SLEEP_DIFF_USEC: %ull", SLEEP_DIFF_USEC);
+    // enter deep sleep if current hour is after SLEEP_START_HOUR; if
+    // SLEEP_END_HOUR > SLEEP_START_HOUR (END is at the same day as START) then
+    // current hour needs to be before SLEEP_END_HOUR to enter sleep
+    if (timeinfo.tm_hour >= SLEEP_START_HOUR &&
+        (SLEEP_END_HOUR <= SLEEP_START_HOUR ||
+         timeinfo.tm_hour < SLEEP_END_HOUR)) {
       // correct the sleep time to the full hour
       uint64_t sleep_usec = SLEEP_DIFF_USEC -
                             (timeinfo.tm_min * 60 * 1000 * 1000) -
