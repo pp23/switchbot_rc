@@ -35,6 +35,8 @@
 #define ABSOLUTE(x) ((x) < 0 ? -(x) : (x))
 // #define DEEP_SLEEP_ENABLED
 
+#define WIFI_ENABLED
+
 static const char *tag = "main";
 
 static esp_ip4_addr_t WIFI_IPV4;
@@ -303,12 +305,14 @@ extern "C" void app_main(void) {
   config.smooth_sync = false;
   //  ESP_ERROR_CHECK(esp_netif_sntp_init(&config));
 
+#ifdef WIFI_ENABLED
   // init wifi
   wifi_init_sta();
   init_http_server();
   on_wifi_connected_fn = on_wifi_connected;
   on_wifi_disconnected_fn = on_wifi_disconnected;
   on_wifi_rssi_fn = on_wifi_rssi_update;
+#endif // WIFI_ENABLED
 
   nimble_port_freertos_init(main_task);
 

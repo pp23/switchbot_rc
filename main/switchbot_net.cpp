@@ -67,20 +67,25 @@ void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
         (wifi_event_sta_disconnected_t *)event_data;
     ESP_LOGE(tag, "Wifi disconnect. Retrying %d/%d", wifi_connect_retry_counter,
              MAX_WIFI_CONNECT_RETRIES);
+    // notify about WIFI disconnect
     if (on_wifi_disconnected_fn != NULL) {
       on_wifi_disconnected_fn(event->reason, event->rssi);
     }
+    // notify about RSSI
     if (on_wifi_rssi_fn != NULL) {
       on_wifi_rssi_fn(event->rssi);
     }
+    // start retry
     if (wifi_connect_retry_counter++ < MAX_WIFI_CONNECT_RETRIES) {
       esp_wifi_connect();
     } else {
       // xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-      ESP_LOGI(tag, "Waiting %ds until retry", WIFI_CONNECT_RETRY_DELAY_SEC);
+#ifndef WIFI_RECONNECT_ONLY_ONCE
       wifi_connect_retry_counter = 0;
+      ESP_LOGI(tag, "Waiting %ds until retry", WIFI_CONNECT_RETRY_DELAY_SEC);
       vTaskDelay(pdMS_TO_TICKS(WIFI_CONNECT_RETRY_DELAY_SEC * 1000));
       esp_wifi_connect();
+#endif // WIFI_RECONNECT_
     }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;

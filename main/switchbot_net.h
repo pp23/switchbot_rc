@@ -6,6 +6,9 @@
 
 #include "esp_netif.h"
 
+#define WIFI_RECONNECT_ONLY_ONCE // reconnect only once after first disconnect,
+                                 // else retry indefinitely
+
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
 
