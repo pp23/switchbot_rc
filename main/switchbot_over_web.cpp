@@ -34,6 +34,11 @@
 
 #define ABSOLUTE(x) ((x) < 0 ? -(x) : (x))
 
+#define MS_TO_USEC(x) ((uint64_t)(x) * 1000)
+#define S_TO_USEC(x) (MS_TO_USEC((x) * 1000))
+#define M_TO_USEC(x) (S_TO_USEC((x) * 60))
+#define H_TO_USEC(x) (M_TO_USEC((x) * 60))
+
 #define DEEP_SLEEP_ENABLED
 #define WIFI_ENABLED
 
@@ -47,12 +52,8 @@ static bool SWITCHBOT_UPDATE = false;
 static uint8_t SWITCHBOT_BAT = 0;
 
 /****** DEEP SLEEP CONFIGURATION ******/
-static const uint8_t SLEEP_START_HOUR = 19; // start deep sleep at 16h UTC
-static const uint8_t SLEEP_END_HOUR = 22;   // end deep sleep at 12h UTC
-static const uint64_t SLEEP_DIFF_USEC =
-    (uint64_t)(ABSOLUTE((SLEEP_END_HOUR < SLEEP_START_HOUR ? 24 : 0) -
-                        ABSOLUTE(SLEEP_END_HOUR - SLEEP_START_HOUR)) *
-               (uint64_t)60 * (uint64_t)60 * (uint64_t)1000 * (uint64_t)1000);
+static const uint8_t SLEEP_START_HOUR = 16; // start deep sleep at 16h UTC
+static const uint8_t SLEEP_END_HOUR = 6;    // end deep sleep at 6h UTC
 
 void sleep_task(void *params) {
   time_t now;
@@ -63,19 +64,30 @@ void sleep_task(void *params) {
     localtime_r(&now, &timeinfo);
     ESP_LOGI("sleep", "tm_hour: %d >= %d ?", timeinfo.tm_hour,
              SLEEP_START_HOUR);
-    ESP_LOGI("sleep", "SLEEP_DIFF_USEC: %ull", SLEEP_DIFF_USEC);
     // enter deep sleep if current hour is after SLEEP_START_HOUR; if
     // SLEEP_END_HOUR > SLEEP_START_HOUR (END is at the same day as START) then
     // current hour needs to be before SLEEP_END_HOUR to enter sleep
     if (timeinfo.tm_hour >= SLEEP_START_HOUR &&
         (SLEEP_END_HOUR <= SLEEP_START_HOUR ||
          timeinfo.tm_hour < SLEEP_END_HOUR)) {
-      // correct the sleep time to the full hour
-      uint64_t sleep_usec = SLEEP_DIFF_USEC -
-                            (timeinfo.tm_min * 60 * 1000 * 1000) -
-                            (timeinfo.tm_sec * 1000 * 1000);
-      ESP_LOGI("SLEEP", "Entering deep sleep...");
-      esp_deep_sleep(sleep_usec);
+      // correct the sleep time by time elapsed since SLEEP_START_HOUR (can
+      // happen if device boots inbetween the SLEEP_START/SLEPP_END)
+      uint8_t hoursToSleep = (SLEEP_END_HOUR < SLEEP_START_HOUR)
+                                 ? (24 - timeinfo.tm_hour) + SLEEP_END_HOUR
+                                 : SLEEP_END_HOUR - timeinfo.tm_hour;
+      uint64_t usecToSleepFromNow = H_TO_USEC(hoursToSleep) -
+                                    M_TO_USEC(timeinfo.tm_min) -
+                                    S_TO_USEC(timeinfo.tm_sec);
+      // ESP_LOGI("sleep", "tm_hour: %d, tm_min: %d, tm_sec: %d, hoursToSleep:
+      // %d",
+      //          timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+      //          hoursToSleep);
+      // ESP_LOGI("sleep", "tm_min: %lld, tm_sec: %lld, hoursToSleep: %lld",
+      //          M_TO_USEC(timeinfo.tm_min), S_TO_USEC(timeinfo.tm_sec),
+      //          H_TO_USEC(hoursToSleep));
+      // ESP_LOGI("SLEEP", "Entering deep sleep for %lld usec",
+      //          usecToSleepFromNow);
+      esp_deep_sleep(usecToSleepFromNow);
     }
   }
 }
@@ -324,7 +336,7 @@ extern "C" void app_main(void) {
 
 #ifdef DEEP_SLEEP_ENABLED
   // start sleep task
-  xTaskCreate(sleep_task, "SLEEP", 4096, NULL, tskIDLE_PRIORITY, NULL);
+  xTaskCreate(sleep_task, "SLEEP", 8192, NULL, tskIDLE_PRIORITY, NULL);
 #endif // DEEP_SLEEP_ENABLED
 
   return;
