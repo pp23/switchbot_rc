@@ -1,4 +1,6 @@
 // #include "bt/host/nimble/esp-hci/include/esp_nimble_hci.h"
+#include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -13,6 +15,7 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "nvs_flash.h"
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -40,7 +43,18 @@
 #define H_TO_USEC(x) (M_TO_USEC((x) * 60))
 
 #define DEEP_SLEEP_ENABLED
+#define RTC8010_ENABLED
 #define WIFI_ENABLED
+
+#ifdef RTC8010_ENABLED
+extern "C" {
+#include "rtc8010/rtc8010.h"
+}
+#define RTC8010_SDA_PIN gpio_num_t(1)
+#define RTC8010_SCL_PIN gpio_num_t(2)
+#define RTC8010_IRQ1_PIN gpio_num_t(3)
+rtc8010_handle_t rtc;
+#endif
 
 static const char *tag = "main";
 
@@ -52,9 +66,12 @@ static bool SWITCHBOT_UPDATE = false;
 static uint8_t SWITCHBOT_BAT = 0;
 
 /****** DEEP SLEEP CONFIGURATION ******/
-static const uint8_t SLEEP_START_HOUR = 16; // start deep sleep at 16h UTC
-static const uint8_t SLEEP_END_HOUR = 6;    // end deep sleep at 6h UTC
+#ifdef DEEP_SLEEP_ENABLED
 
+static const uint8_t SLEEP_START_HOUR = 18; // start deep sleep at 16h UTC
+static const uint8_t SLEEP_END_HOUR = 13;   // end deep sleep at 6h UTC
+
+#ifndef RTC8010_ENABLED // use internal rtc if rtc8010 is not available
 void sleep_task(void *params) {
   time_t now;
   struct tm timeinfo;
@@ -78,19 +95,43 @@ void sleep_task(void *params) {
       uint64_t usecToSleepFromNow = H_TO_USEC(hoursToSleep) -
                                     M_TO_USEC(timeinfo.tm_min) -
                                     S_TO_USEC(timeinfo.tm_sec);
-      // ESP_LOGI("sleep", "tm_hour: %d, tm_min: %d, tm_sec: %d, hoursToSleep:
-      // %d",
-      //          timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
-      //          hoursToSleep);
-      // ESP_LOGI("sleep", "tm_min: %lld, tm_sec: %lld, hoursToSleep: %lld",
-      //          M_TO_USEC(timeinfo.tm_min), S_TO_USEC(timeinfo.tm_sec),
-      //          H_TO_USEC(hoursToSleep));
-      // ESP_LOGI("SLEEP", "Entering deep sleep for %lld usec",
-      //          usecToSleepFromNow);
       esp_deep_sleep(usecToSleepFromNow);
     }
   }
 }
+#else  // RTC8010_ENABLED
+//! cron config when to enter deep sleep
+const cron_format_t deep_sleep_start_cron = {
+    .min = 0xff,
+    .hour = SLEEP_START_HOUR,
+    .day = 0xff,
+    .weekday = 0xff,
+};
+//! cron config when to exit deep sleep
+const cron_format_t deep_sleep_end_cron = {
+    .min = 0xff,
+    .hour = SLEEP_END_HOUR,
+    .day = 0xff,
+    .weekday = 0xff,
+};
+//! gets called by rtc8010 alarm trigger
+//! configures deep sleep with irq1 as ext1 wakeup source (only ext1 supports
+//! GPIO 0-7 of a ESP32-C6)
+void enter_deep_sleep(rtc8010_handle_t *rtc) {
+  // set alarm to deep sleep end time
+  ESP_ERROR_CHECK(rtc8010_reset_alarm(rtc, &deep_sleep_end_cron));
+  // configure IRQ1 as wakeup source. RTC8010-IRQ1 is an open-drain pin -> pulls
+  // to low on alarm
+  ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(1ULL << RTC8010_IRQ1_PIN,
+                                                  ESP_EXT1_WAKEUP_ANY_LOW));
+  // RTC8010-IRQ1 as open-drain pin requires a pullup
+  ESP_ERROR_CHECK(rtc_gpio_init(RTC8010_IRQ1_PIN));
+  ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(RTC8010_IRQ1_PIN));
+  ESP_ERROR_CHECK(rtc_gpio_pullup_en(RTC8010_IRQ1_PIN));
+  esp_deep_sleep_start();
+}
+#endif // RTC8010_ENABLED
+#endif // DEEP_SLEEP_ENABLED
 
 void on_switchbot_data_update(SwitchBot *sb) {
   ESP_LOGI(tag, "SwitchBot update: %s", sb->role_name());
@@ -116,6 +157,9 @@ void on_ntp_sync(struct timeval *tv) {
   char strftime_buf[64];
   strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
   ESP_LOGE(tag, "Time synced: %s", strftime_buf);
+#ifdef RTC8010_ENABLED
+  rtc8010_set_time(&rtc, &timeinfo);
+#endif // RTC8010_ENABLED
   NTP_SYNCED = true;
 }
 
@@ -317,11 +361,32 @@ extern "C" void app_main(void) {
   ble_hs_cfg.sync_cb = sync_cb;
   ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
-  // init sntp. NTP service starts in on_wifi_connected
-  esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-  config.start = false;
-  config.smooth_sync = false;
-  //  ESP_ERROR_CHECK(esp_netif_sntp_init(&config));
+  // set timezone to cover CET/CEST shifts
+  setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
+  tzset();
+
+#ifdef RTC8010_ENABLED
+  ESP_ERROR_CHECK(rtc8010_open(&rtc, RTC8010_SDA_PIN, RTC8010_SCL_PIN));
+  ESP_ERROR_CHECK(rtc8010_init(&rtc));
+  // update time
+  struct tm timeinfo;
+  ESP_ERROR_CHECK(rtc8010_get_time(&rtc, &timeinfo));
+  struct timeval tv = {};
+  tv.tv_sec = mktime(&timeinfo);
+  int8_t errSetTime = settimeofday(&tv, NULL);
+  if (errSetTime != 0) {
+    ESP_LOGE(tag, "Could not set time: %d", errno);
+  }
+#ifdef DEEP_SLEEP_ENABLED
+  rtc_gpio_deinit(RTC8010_IRQ1_PIN); // release rtc io pin back to iomux
+  // first define the time when the deep sleep shall start.
+  // this triggers an interrupt. The interrupt function configure
+  // the actual deep sleep with IRQ1-Pin of the rtc as ext1-wakeup source
+  ESP_ERROR_CHECK(rtc8010_init_alarm(&rtc, RTC8010_IRQ1_PIN, enter_deep_sleep));
+  ESP_ERROR_CHECK(rtc8010_reset_alarm(&rtc, &deep_sleep_start_cron));
+#endif // DEEP_SLEEP_ENABLED
+
+#endif // RTC8010_ENABLED
 
 #ifdef WIFI_ENABLED
   // init wifi
@@ -335,8 +400,10 @@ extern "C" void app_main(void) {
   nimble_port_freertos_init(main_task);
 
 #ifdef DEEP_SLEEP_ENABLED
-  // start sleep task
+#ifndef RTC8010_ENABLED
+  // start sleep task with internal rtc
   xTaskCreate(sleep_task, "SLEEP", 8192, NULL, tskIDLE_PRIORITY, NULL);
+#endif // !RTC8010_ENABLED
 #endif // DEEP_SLEEP_ENABLED
 
   return;

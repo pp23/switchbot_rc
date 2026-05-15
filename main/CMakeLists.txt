@@ -6,6 +6,7 @@ idf_component_register(SRCS
                           "switchbot_over_web.cpp"
                           "lcd/st7789.cpp"
                           "lcd/Vernon_ST7789T/Vernon_ST7789T.cpp"
+                          "rtc8010/rtc8010.c"
                     INCLUDE_DIRS
                           "."
                           "lcd/"
