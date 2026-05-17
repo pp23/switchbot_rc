@@ -68,11 +68,11 @@ static uint8_t SWITCHBOT_BAT = 0;
 /****** DEEP SLEEP CONFIGURATION ******/
 #ifdef DEEP_SLEEP_ENABLED
 
-static const uint8_t SLEEP_START_HOUR = 18; // start deep sleep at 16h UTC
-static const uint8_t SLEEP_END_HOUR = 13;   // end deep sleep at 6h UTC
+static const uint8_t SLEEP_START_HOUR = 18; // start deep sleep at 18h
+static const uint8_t SLEEP_END_HOUR = 8;    // end deep sleep at 8h
 
 #ifndef RTC8010_ENABLED // use internal rtc if rtc8010 is not available
-void sleep_task(void *params) {
+static void sleep_task(void *params) {
   time_t now;
   struct tm timeinfo;
   while (1) {
@@ -129,6 +129,27 @@ void enter_deep_sleep(rtc8010_handle_t *rtc) {
   ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(RTC8010_IRQ1_PIN));
   ESP_ERROR_CHECK(rtc_gpio_pullup_en(RTC8010_IRQ1_PIN));
   esp_deep_sleep_start();
+}
+
+static void sleep_task(void *params) {
+  ESP_ERROR_CHECK(rtc8010_open(&rtc, RTC8010_SDA_PIN, RTC8010_SCL_PIN));
+  ESP_ERROR_CHECK(rtc8010_init(&rtc));
+  // update time
+  struct tm timeinfo;
+  ESP_ERROR_CHECK(rtc8010_get_time(&rtc, &timeinfo));
+  struct timeval tv = {};
+  tv.tv_sec = mktime(&timeinfo);
+  int8_t errSetTime = settimeofday(&tv, NULL);
+  if (errSetTime != 0) {
+    ESP_LOGE(tag, "Could not set time: %d", errno);
+  }
+  rtc_gpio_deinit(RTC8010_IRQ1_PIN); // release rtc io pin back to iomux
+  // first define the time when the deep sleep shall start.
+  // this triggers an interrupt. The interrupt function configure
+  // the actual deep sleep with IRQ1-Pin of the rtc as ext1-wakeup source
+  ESP_ERROR_CHECK(rtc8010_init_alarm(&rtc, RTC8010_IRQ1_PIN, enter_deep_sleep));
+  ESP_ERROR_CHECK(rtc8010_reset_alarm(&rtc, &deep_sleep_start_cron));
+  vTaskDelete(NULL);
 }
 #endif // RTC8010_ENABLED
 #endif // DEEP_SLEEP_ENABLED
@@ -365,29 +386,6 @@ extern "C" void app_main(void) {
   setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
   tzset();
 
-#ifdef RTC8010_ENABLED
-  ESP_ERROR_CHECK(rtc8010_open(&rtc, RTC8010_SDA_PIN, RTC8010_SCL_PIN));
-  ESP_ERROR_CHECK(rtc8010_init(&rtc));
-  // update time
-  struct tm timeinfo;
-  ESP_ERROR_CHECK(rtc8010_get_time(&rtc, &timeinfo));
-  struct timeval tv = {};
-  tv.tv_sec = mktime(&timeinfo);
-  int8_t errSetTime = settimeofday(&tv, NULL);
-  if (errSetTime != 0) {
-    ESP_LOGE(tag, "Could not set time: %d", errno);
-  }
-#ifdef DEEP_SLEEP_ENABLED
-  rtc_gpio_deinit(RTC8010_IRQ1_PIN); // release rtc io pin back to iomux
-  // first define the time when the deep sleep shall start.
-  // this triggers an interrupt. The interrupt function configure
-  // the actual deep sleep with IRQ1-Pin of the rtc as ext1-wakeup source
-  ESP_ERROR_CHECK(rtc8010_init_alarm(&rtc, RTC8010_IRQ1_PIN, enter_deep_sleep));
-  ESP_ERROR_CHECK(rtc8010_reset_alarm(&rtc, &deep_sleep_start_cron));
-#endif // DEEP_SLEEP_ENABLED
-
-#endif // RTC8010_ENABLED
-
 #ifdef WIFI_ENABLED
   // init wifi
   wifi_init_sta();
@@ -400,10 +398,8 @@ extern "C" void app_main(void) {
   nimble_port_freertos_init(main_task);
 
 #ifdef DEEP_SLEEP_ENABLED
-#ifndef RTC8010_ENABLED
   // start sleep task with internal rtc
   xTaskCreate(sleep_task, "SLEEP", 8192, NULL, tskIDLE_PRIORITY, NULL);
-#endif // !RTC8010_ENABLED
 #endif // DEEP_SLEEP_ENABLED
 
   return;

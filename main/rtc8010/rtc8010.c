@@ -65,26 +65,31 @@ esp_err_t writeRegister(i2c_master_dev_handle_t dev_handle, uint8_t regAddr,
                              sizeof(i2c_register_t), 100);
 }
 
+void reset_irq(const rtc8010_handle_t *handle) {
+  // reset IRQ
+  esp_err_t ret = ESP_OK;
+  uint8_t flags = 0;
+  if ((ret = i2c_master_transmit_receive(handle->dev_handle, &flagReg, 1,
+                                         &flags, 1, 10)) != ESP_OK) {
+    ESP_LOGE("rtc", "could not read alarm register: %d", ret);
+  }
+  if ((ret = writeRegister(handle->dev_handle, flagReg,
+                           flags & ~(1 << RTC_BIT_AF))) != ESP_OK) {
+    ESP_LOGE("rtc", "could not reset alarm register: %d", ret);
+  }
+}
+
 void IRAM_ATTR rtc_irq1_handler(void *arg) {
   rtc8010_handle_t *handle = (rtc8010_handle_t *)arg;
   xQueueSendFromISR(handle->evt_q, (void *)handle, NULL);
 }
 void rtc_irq1_task(void *arg) {
   QueueHandle_t *evt_q = (QueueHandle_t *)arg;
-  esp_err_t ret = ESP_OK;
   rtc8010_handle_t handle;
   while (1) {
     if (xQueueReceive(*evt_q, &handle, 0)) {
       // reset IRQ
-      uint8_t flags = 0;
-      if ((ret = i2c_master_transmit_receive(handle.dev_handle, &flagReg, 1,
-                                             &flags, 1, 10)) != ESP_OK) {
-        ESP_LOGE("rtc", "could not read alarm register: %d", ret);
-      }
-      if ((ret = writeRegister(handle.dev_handle, flagReg,
-                               flags & ~(1 << RTC_BIT_AF))) != ESP_OK) {
-        ESP_LOGE("rtc", "could not reset alarm register: %d", ret);
-      }
+      reset_irq(&handle);
       handle.alarm_cb(&handle);
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -202,6 +207,8 @@ esp_err_t rtc8010_init(rtc8010_handle_t *handle) {
                                  sizeof(i2c_register_t), 100)) != ESP_OK) {
     return ret;
   }
+  // reset irq
+  reset_irq(handle);
   return ret;
 }
 
@@ -302,6 +309,8 @@ esp_err_t rtc8010_init_alarm(rtc8010_handle_t *handle, gpio_num_t irq,
   assert(handle->dev_handle != NULL);
   assert(alarm_cb != NULL);
   esp_err_t ret = ESP_OK;
+  // reset irq to avoid immediate triggering from last active alarm
+  reset_irq(handle);
   // configure alarm isr
   gpio_config_t io_conf = {};
   io_conf.intr_type = GPIO_INTR_NEGEDGE;
@@ -335,6 +344,8 @@ esp_err_t rtc8010_reset_alarm(rtc8010_handle_t *handle,
   assert(handle != NULL);
   assert(cron != NULL);
   esp_err_t ret = ESP_OK;
+  // reset irq to avoid immediate triggering from last active alarm
+  reset_irq(handle);
   // set alarm
   // first disable AIE
   uint8_t data = 0;
